@@ -59,9 +59,12 @@ std::size_t isf_symbol_count(const fs::path& p) {
     }
 }
 
-// Standard cache locations to look for ISFs, in priority order.
-std::vector<fs::path> standard_cache_dirs() {
+// Standard cache locations to look for ISFs, in priority order. `preferred`
+// (the --symbol-cache dir, may be empty) is searched first so a previously
+// saved ISF there round-trips on the next run.
+std::vector<fs::path> standard_cache_dirs(const fs::path& preferred) {
     std::vector<fs::path> dirs;
+    if (!preferred.empty()) dirs.emplace_back(preferred);
     dirs.emplace_back("symbols/linux");
     dirs.emplace_back("symbols");
     if (const char* env = std::getenv("LMPFS_SYMBOL_CACHE"))
@@ -153,8 +156,15 @@ std::string sq(const std::string& s) {
 }
 #endif
 
-// Standard output directory for fetched ISFs.
-fs::path cache_output_dir() {
+// Output directory for fetched / generated ISFs. Precedence:
+//   1. `preferred` (--symbol-cache), if given
+//   2. $LMPFS_SYMBOL_CACHE (so the env var actually overrides the *save* dir,
+//      matching its documented "override the symbol cache dir" behaviour)
+//   3. platform default (%LOCALAPPDATA%/MemNixFS/symbols | ~/.cache/lmpfs/symbols)
+fs::path cache_output_dir(const fs::path& preferred) {
+    if (!preferred.empty()) return preferred;
+    if (const char* env = std::getenv("LMPFS_SYMBOL_CACHE"))
+        return fs::path(env);
 #ifdef _WIN32
     if (const char* la = std::getenv("LOCALAPPDATA"))
         return fs::path(la) / "MemNixFS" / "symbols";
@@ -165,10 +175,11 @@ fs::path cache_output_dir() {
     return fs::current_path() / "symbols" / "linux";
 }
 
-// Attempts to generate `release`.json.xz via the bundled script. Returns the
-// produced ISF path on success. If `vmlinux` is non-empty the script skips
-// the distro install step and runs dwarf2json directly on it.
-fs::path try_fetch(const std::string& release, const fs::path& vmlinux = {}) {
+// Attempts to generate `release`.json.xz into `out_dir` via the bundled
+// script. Returns the produced ISF path on success. If `vmlinux` is non-empty
+// the script skips the distro install step and runs dwarf2json directly on it.
+fs::path try_fetch(const std::string& release, const fs::path& out_dir,
+                   const fs::path& vmlinux = {}) {
     auto script = bundled_script_path();
     if (script.empty()) {
         log::warn("auto-fetch: tools/fetch_symbols.sh not found "
@@ -179,7 +190,6 @@ fs::path try_fetch(const std::string& release, const fs::path& vmlinux = {}) {
     if (!vmlinux.empty())
         log::debug("auto-fetch: with user-supplied vmlinux {}", vmlinux.string());
 
-    fs::path out_dir = cache_output_dir();
     fs::create_directories(out_dir);
     fs::path out_isf = out_dir / (release + ".json.xz");
 
@@ -260,6 +270,10 @@ SymbolResolveResult resolve_symbols(const PhysicalLayer&        phys,
         throw_error("Banner found but unparseable: '{}'", banner.substr(0, 200));
     log::note("Detected kernel release: {} (distro={}, banner shown above)", release, distro);
 
+    // Directory where any downloaded / generated ISF is saved (and which is
+    // searched first). Honors --symbol-cache, then $LMPFS_SYMBOL_CACHE.
+    const fs::path out_dir = cache_output_dir(opts.cache_dir);
+
     // Step 2: user gave a directory? walk it.
     if (!opts.user_path.empty() && fs::is_directory(opts.user_path)) {
         auto p = search_dir_for_release(opts.user_path, release);
@@ -278,8 +292,8 @@ SymbolResolveResult resolve_symbols(const PhysicalLayer&        phys,
     std::string types_only_how;
     bool        have_types_only_cache = false;
 
-    // Step 3: standard cache locations.
-    for (auto& d : standard_cache_dirs()) {
+    // Step 3: standard cache locations (--symbol-cache dir searched first).
+    for (auto& d : standard_cache_dirs(opts.cache_dir)) {
         auto p = search_dir_for_release(d, release);
         if (!p.empty()) {
             std::size_t nsym = isf_symbol_count(p);
@@ -331,7 +345,7 @@ SymbolResolveResult resolve_symbols(const PhysicalLayer&        phys,
             log::debug("Trying BTF→ISF from blob #{} ({} bytes @ PA {:#x})",
                        i + 1, info.size, info.offset_pa);
             auto blob = linux::read_btf(phys, info);
-            std::filesystem::path out = cache_output_dir() / (release + ".json.xz");
+            std::filesystem::path out = out_dir / (release + ".json.xz");
             auto r = btf_to_isf(blob, release, out,
                                 kallsyms.ok ? &kallsyms : nullptr);
             if (!r.ok) {
@@ -371,7 +385,7 @@ SymbolResolveResult resolve_symbols(const PhysicalLayer&        phys,
         if (!fs::is_regular_file(opts.vmlinux_path))
             throw_error("--vmlinux file does not exist: {}", opts.vmlinux_path.string());
         log::info("Generating ISF from user-supplied vmlinux: {}", opts.vmlinux_path.string());
-        auto p = try_fetch(release, opts.vmlinux_path);
+        auto p = try_fetch(release, out_dir, opts.vmlinux_path);
         if (!p.empty()) {
             log::info("Generated + cached ISF at: {}", p.string());
             return { p, release, "from-vmlinux" };
@@ -382,7 +396,7 @@ SymbolResolveResult resolve_symbols(const PhysicalLayer&        phys,
     // Step 5: community symbol-cache HTTP fetch (no local toolchain needed).
     if (opts.http_cache) {
         log::debug("Trying community symbol cache (HTTP)...");
-        auto r = fetch_isf_from_mirrors(banner, release, cache_output_dir(),
+        auto r = fetch_isf_from_mirrors(banner, release, out_dir,
                                         default_isf_mirrors());
         if (r.ok) {
             log::info("Downloaded ISF from {}", r.from_url);
@@ -394,7 +408,7 @@ SymbolResolveResult resolve_symbols(const PhysicalLayer&        phys,
     // Step 6: auto-fetch via distro debug packages (needs network + WSL/native).
     if (opts.auto_fetch) {
         log::debug("--auto-fetch enabled, running symbol-fetch pipeline...");
-        auto p = try_fetch(release);
+        auto p = try_fetch(release, out_dir);
         if (!p.empty()) {
             log::info("Fetched + cached ISF at: {}", p.string());
             return { p, release, "auto-fetched" };

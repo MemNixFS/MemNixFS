@@ -184,6 +184,7 @@ control the chain:
 |---|---|
 | `--symbols PATH` | Explicit ISF `.json[.xz]` file, or a directory to walk for matches. |
 | `--vmlinux PATH` | Run `dwarf2json` against this vmlinux (offline). Uses WSL on Windows. |
+| `--symbol-cache DIR` | Directory where auto-downloaded / generated ISFs are **saved** (and searched first on the next run). Overrides `$LMPFS_SYMBOL_CACHE` and the default `%LOCALAPPDATA%\MemNixFS\symbols`. Created if absent. Alias: `--symbols-cache`. |
 | `--auto-fetch` | Run `tools/fetch_symbols.sh` to download the matching distro kernel-debug package and produce an ISF. |
 | `--no-http-cache` | Disable HTTP lookups against community symbol mirrors. Pair with `--vmlinux` or rely on BTF+kallsyms for fully offline runs. |
 
@@ -292,7 +293,7 @@ memnixfs -h        # or --help
 
 | Variable | Purpose |
 |---|---|
-| `LMPFS_SYMBOL_CACHE` | Override the symbol-cache directory. Defaults to `%LOCALAPPDATA%\MemNixFS\symbols` on Windows, `~/.cache/lmpfs/symbols` elsewhere. |
+| `LMPFS_SYMBOL_CACHE` | Override the symbol-cache directory for both **saving** fetched ISFs and **searching**. Defaults to `%LOCALAPPDATA%\MemNixFS\symbols` on Windows, `~/.cache/lmpfs/symbols` elsewhere. The `--symbol-cache` flag takes precedence. |
 | `LMPFS_ISF_MIRRORS` | Semicolon-separated list of mirror URL templates. Each entry can contain `{KEY}` (banner SHA-256) and `{KEY:0:2}` (first 2 chars). Defaults to the Abyss-W4tcher vol3-symbols repo. |
 | `LMPFS_TOOLS_DIR` | Where to find `tools/fetch_symbols.sh` if it's not in a default location. |
 

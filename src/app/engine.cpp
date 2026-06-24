@@ -31,6 +31,7 @@ std::unique_ptr<Engine> Engine::create(const Options& opts) {
     SymbolResolveOptions sro{};
     sro.user_path    = opts.symbols_path;
     sro.vmlinux_path = opts.vmlinux_path;
+    sro.cache_dir    = opts.symbol_cache_dir;
     sro.auto_fetch   = opts.auto_fetch_symbols;
     sro.http_cache   = opts.http_symbol_cache;
     auto sym = resolve_symbols(*eng->phys_, sro);

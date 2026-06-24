@@ -288,6 +288,15 @@ if(UNIX)
     set_target_properties(memnixfs PROPERTIES
         INSTALL_RPATH "$ORIGIN/../lib")
 endif()
+# Embed a manifest selecting the UTF-8 active code page so non-ASCII paths
+# (e.g. Chinese dump/symbol paths) round-trip correctly through argv,
+# std::filesystem::path, CreateFileW and fmt output. Merged with the linker's
+# auto-generated manifest via /MANIFESTINPUT. No effect on pre-1903 Windows.
+if(MSVC)
+    target_link_options(memnixfs PRIVATE
+        "/MANIFEST:EMBED"
+        "/MANIFESTINPUT:${CMAKE_CURRENT_SOURCE_DIR}/src/cli/memnixfs.manifest")
+endif()
 
 # --- C API DLL (Tier 6 foundation) -----------------------------------------
 #

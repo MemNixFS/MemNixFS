@@ -39,10 +39,16 @@ If `PATH` is a directory:
 ### Step 2 — Local cache
 
 Searched in order:
-1. `./symbols/linux/<release>.json[.xz]`
-2. `$LMPFS_SYMBOL_CACHE/<release>.json[.xz]`
-3. `%LOCALAPPDATA%\MemNixFS\symbols\<release>.json[.xz]` (Windows)
-4. `~/.cache/lmpfs/symbols/<release>.json[.xz]` (Unix)
+1. `<--symbol-cache DIR>/<release>.json[.xz]` (if the flag was given)
+2. `./symbols/linux/<release>.json[.xz]`
+3. `$LMPFS_SYMBOL_CACHE/<release>.json[.xz]`
+4. `%LOCALAPPDATA%\MemNixFS\symbols\<release>.json[.xz]` (Windows)
+5. `~/.cache/lmpfs/symbols/<release>.json[.xz]` (Unix)
+
+Whenever a later step **downloads or generates** an ISF (BTF+kallsyms,
+HTTP mirror, `--vmlinux`, `--auto-fetch`), it is saved to the
+`--symbol-cache` directory if given, else `$LMPFS_SYMBOL_CACHE`, else the
+platform default — so it is reused on subsequent runs.
 
 Each candidate's `metadata.linux.symbols[0].name` is verified against
 the dump's release. Mismatches are skipped (a previous run might have
