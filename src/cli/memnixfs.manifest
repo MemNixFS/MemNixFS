@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
+  <assemblyIdentity version="0.37.1.0" name="MemNixFS.memnixfs" type="win32"/>
+
+  <!-- Run with UTF-8 as the process active code page. Without this, on a
+       non-Latin Windows (e.g. Chinese, ACP=GBK) the CRT decodes argv with the
+       ANSI code page, so a non-ASCII dump/symbol path is corrupted before the
+       program sees it, std::filesystem::path::string() returns non-UTF-8 bytes,
+       and fmt's console writer throws "invalid utf8". With ACP=UTF-8 the whole
+       chain (argv -> path -> CreateFileW -> logging) is UTF-8-consistent.
+       Honored on Windows 10 1903+ / Windows 11; ignored on older systems. -->
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>
+    </windowsSettings>
+  </application>
+
+  <!-- Declare Windows 10/11 support so the activeCodePage setting is applied. -->
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
+    </application>
+  </compatibility>
+</assembly>

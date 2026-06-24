@@ -49,28 +49,42 @@ constexpr u64 kMA64_SlotCount = 10;
 
 struct VmaOffsets {
     u64 vm_start, vm_end, vm_flags, vm_pgoff, vm_file;
+    u64 vm_next;   // legacy (<6.1) linked-list link; 0 when absent (maple kernels)
 };
 struct MmOffsets {
-    u64 mm_mt;   // maple_tree (0x40 .. +0x10)
-    u64 pgd;     // 0x78
-    u64 ma_root; // offset of ma_root inside maple_tree (0x8 from start)
+    bool maple;  // true: 6.1+ maple tree; false: legacy mmap/vm_next list
+    u64  mm_mt;  // maple_tree offset within mm_struct (maple only)
+    u64  ma_root;// ma_root offset within maple_tree   (maple only)
+    u64  mmap;   // first vm_area_struct* (legacy only)
+    u64  pgd;    // mm_struct.pgd (both layouts)
 };
 
 VmaOffsets get_vma_offsets(const IsfSymbols& isf) {
-    return {
-        isf.field_offset("vm_area_struct", "vm_start"),
-        isf.field_offset("vm_area_struct", "vm_end"),
-        isf.field_offset("vm_area_struct", "vm_flags"),
-        isf.field_offset("vm_area_struct", "vm_pgoff"),
-        isf.field_offset("vm_area_struct", "vm_file"),
-    };
+    VmaOffsets o{};
+    o.vm_start = isf.field_offset("vm_area_struct", "vm_start");
+    o.vm_end   = isf.field_offset("vm_area_struct", "vm_end");
+    o.vm_flags = isf.field_offset("vm_area_struct", "vm_flags");
+    o.vm_pgoff = isf.field_offset("vm_area_struct", "vm_pgoff");
+    o.vm_file  = isf.field_offset("vm_area_struct", "vm_file");
+    // vm_next only exists pre-6.1; the maple tree removed the VMA linked list.
+    o.vm_next  = isf.field_offset_opt("vm_area_struct", "vm_next").value_or(0);
+    return o;
 }
 MmOffsets get_mm_offsets(const IsfSymbols& isf) {
-    return {
-        isf.field_offset("mm_struct", "mm_mt"),
-        isf.field_offset("mm_struct", "pgd"),
-        isf.field_offset("maple_tree", "ma_root"),
-    };
+    MmOffsets mo{};
+    mo.pgd = isf.field_offset("mm_struct", "pgd");
+    // 6.1+ stores VMAs in a maple tree (mm_struct.mm_mt). Pre-6.1 kernels have
+    // no mm_mt; they keep a vm_next-linked list rooted at mm_struct.mmap. Probe
+    // for mm_mt to pick the layout rather than assuming (and throwing) one.
+    if (auto mt = isf.field_offset_opt("mm_struct", "mm_mt")) {
+        mo.maple   = true;
+        mo.mm_mt   = *mt;
+        mo.ma_root = isf.field_offset("maple_tree", "ma_root");
+    } else {
+        mo.maple = false;
+        mo.mmap  = isf.field_offset("mm_struct", "mmap");
+    }
+    return mo;
 }
 
 // Hard cap so corrupt maple-tree walks (e.g. dying processes whose mm slab
@@ -145,18 +159,34 @@ std::vector<Vma> enumerate_vmas(const PhysicalLayer& phys,
     auto vo = get_vma_offsets(isf);
     auto mo = get_mm_offsets(isf);
 
-    // mm->mm_mt is an embedded maple_tree starting at offset mm_mt.
-    // ma_root within maple_tree is at mo.ma_root (typically 0x8).
-    u64 ma_root = 0;
-    if (!read_dm(phys, kctx, p.mm + mo.mm_mt + mo.ma_root, ma_root)) return out;
-    if (ma_root == 0) return out;
-
-    // For a tree with only one entry, ma_root might be the data pointer directly
-    // (low bits 0). For a tree with nodes, ma_root has type bits set in the low byte.
-    // Volatility distinguishes by examining the low bits / flags. We treat ma_root
-    // as the root mte and recurse.
     std::unordered_set<u64> seen;
-    walk_maple_node(phys, kctx, vo, ma_root, /*expected_depth=*/8, /*depth=*/1, seen, out);
+    if (mo.maple) {
+        // 6.1+: mm->mm_mt is an embedded maple_tree starting at offset mm_mt;
+        // ma_root within maple_tree is at mo.ma_root (typically 0x8).
+        //
+        // For a tree with only one entry, ma_root might be the data pointer
+        // directly (low bits 0). For a tree with nodes, ma_root has type bits
+        // set in the low byte. Volatility distinguishes by examining the low
+        // bits / flags. We treat ma_root as the root mte and recurse.
+        u64 ma_root = 0;
+        if (read_dm(phys, kctx, p.mm + mo.mm_mt + mo.ma_root, ma_root) && ma_root != 0)
+            walk_maple_node(phys, kctx, vo, ma_root, /*expected_depth=*/8, /*depth=*/1, seen, out);
+    } else if (vo.vm_next != 0) {
+        // Pre-6.1: walk the singly-linked VMA list. mm->mmap points at the
+        // first vm_area_struct; follow vm_next until null. `seen` guards
+        // against cycles in a corrupt / reused mm slab, and read_vma's own
+        // kMaxVmasPerProcess cap bounds the total count.
+        u64 vma_va = 0;
+        if (read_dm(phys, kctx, p.mm + mo.mmap, vma_va)) {
+            while (vma_va != 0 && out.size() < kMaxVmasPerProcess) {
+                if (!seen.insert(vma_va).second) break; // cycle guard
+                read_vma(phys, kctx, vma_va, vo, out);
+                u64 next = 0;
+                if (!read_dm(phys, kctx, vma_va + vo.vm_next, next)) break;
+                vma_va = next;
+            }
+        }
+    }
 
     // Sort and de-duplicate by vm_start.
     std::sort(out.begin(), out.end(),

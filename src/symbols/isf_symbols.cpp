@@ -151,6 +151,13 @@ u64 IsfSymbols::field_offset(const std::string& t, const std::string& f) const {
     if (it == ti->fields.end()) throw_error("ISF: type '{}' has no field '{}'", t, f);
     return it->second.offset;
 }
+std::optional<u64> IsfSymbols::field_offset_opt(const std::string& t, const std::string& f) const {
+    auto ti = find_type(t);
+    if (!ti) return std::nullopt;
+    auto it = ti->fields.find(f);
+    if (it == ti->fields.end()) return std::nullopt;
+    return it->second.offset;
+}
 u64 IsfSymbols::type_size(const std::string& t) const {
     auto ti = find_type(t);
     if (!ti) throw_error("ISF: unknown type '{}'", t);

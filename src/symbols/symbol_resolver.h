@@ -5,6 +5,7 @@
 //   2. If `--symbols PATH` is a directory → walk for an ISF whose
 //      metadata.kernel_release matches the dump's banner
 //   3. Standard cache locations:
+//        <--symbol-cache>/<release>.json{,.xz}                  (if given)
 //        ./symbols/linux/<release>.json{,.xz}
 //        $LMPFS_SYMBOL_CACHE/<release>.json{,.xz}
 //        %LOCALAPPDATA%/MemNixFS/symbols/<release>.json{,.xz}   (Windows)
@@ -26,6 +27,9 @@ namespace lmpfs {
 struct SymbolResolveOptions {
     std::filesystem::path user_path;       // --symbols (file or directory; may be empty)
     std::filesystem::path vmlinux_path;    // --vmlinux  (we'll run dwarf2json on this)
+    std::filesystem::path cache_dir;       // --symbol-cache: where downloaded/generated
+                                           // ISFs are SAVED (and searched first). Empty →
+                                           // $LMPFS_SYMBOL_CACHE or the platform default.
     bool                  auto_fetch  = false;   // --auto-fetch (distro pkg + dwarf2json)
     bool                  http_cache  = true;    // try community mirrors before auto-fetch
 };

@@ -180,7 +180,8 @@ struct Process {
 ```
 
 That's enough to populate `/proc/<pid>/info.txt` and to walk to each
-process's VMAs (via `mm->mm_mt` — see [VMAs & memory](vma-and-memory.md)).
+process's VMAs (via `mm->mm_mt` on 6.1+, or the `mm->mmap`/`vm_next`
+list on pre-6.1 kernels — see [VMAs & memory](vma-and-memory.md)).
 
 ## Numbers from real dumps
 

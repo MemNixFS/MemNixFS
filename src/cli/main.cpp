@@ -100,6 +100,10 @@ void usage() {
         "  --vmlinux PATH      Generate ISF from this user-supplied vmlinux\n"
         "                      (offline; runs dwarf2json via WSL on Windows).\n"
         "                      Highest-leverage escape hatch for custom kernels.\n"
+        "  --symbol-cache DIR  Directory where auto-downloaded / generated ISFs\n"
+        "                      are SAVED (and searched first on the next run).\n"
+        "                      Overrides $LMPFS_SYMBOL_CACHE and the default\n"
+        "                      %%LOCALAPPDATA%%/MemNixFS/symbols. Created if absent.\n"
         "  --auto-fetch        Run tools/fetch_symbols.sh to download the\n"
         "                      matching kernel-debug package (Ubuntu/Debian/\n"
         "                      Fedora/RHEL/Arch/openSUSE).\n"
@@ -127,8 +131,9 @@ void usage() {
         "                      /proc per-process, /files,/fs content) stay\n"
         "                      on-demand -- add --forensic to also warm those.\n"
         "Environment:\n"
-        "  LMPFS_SYMBOL_CACHE  Override the symbol cache dir (default:\n"
-        "                      %%LOCALAPPDATA%%/MemNixFS/symbols).\n"
+        "  LMPFS_SYMBOL_CACHE  Override the symbol cache dir for both saving and\n"
+        "                      searching (default: %%LOCALAPPDATA%%/MemNixFS/\n"
+        "                      symbols). --symbol-cache takes precedence.\n"
         "  LMPFS_ISF_MIRRORS   Semicolon-separated list of mirror URL templates,\n"
         "                      each containing {{KEY}} (banner sha256) and/or\n"
         "                      {{KEY:0:2}} (first 2 chars).\n"
@@ -197,7 +202,7 @@ int main(int argc, char** argv) {
     using lmpfs::log::set_level;
     init_console_color();
 
-    std::filesystem::path dump, syms, vmlinux;
+    std::filesystem::path dump, syms, vmlinux, symbol_cache;
     std::string command = "overview";
     std::string mount_point;
     bool auto_fetch = false;
@@ -237,6 +242,8 @@ int main(int argc, char** argv) {
         else if (a == "--dump"     && i + 1 < argc) dump = argv[++i];
         else if (a == "--symbols"  && i + 1 < argc) syms = argv[++i];
         else if (a == "--vmlinux"  && i + 1 < argc) vmlinux = argv[++i];
+        else if ((a == "--symbol-cache" || a == "--symbols-cache") && i + 1 < argc)
+            symbol_cache = argv[++i];
         else if (a == "--auto-fetch") auto_fetch = true;
         else if (a == "--no-http-cache") no_http_cache = true;
         else if (a == "--forensic") forensic = true;
@@ -324,6 +331,7 @@ int main(int argc, char** argv) {
         opts.dump_path          = dump;
         opts.symbols_path       = syms;
         opts.vmlinux_path       = vmlinux;
+        opts.symbol_cache_dir   = symbol_cache;
         opts.auto_fetch_symbols = auto_fetch;
         opts.http_symbol_cache  = !no_http_cache;
         opts.forensic           = forensic;

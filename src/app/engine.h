@@ -21,6 +21,7 @@ public:
         std::filesystem::path dump_path;
         std::filesystem::path symbols_path;   // .json / .json.xz / dir / empty (auto)
         std::filesystem::path vmlinux_path;   // --vmlinux (generate ISF from this)
+        std::filesystem::path symbol_cache_dir; // --symbol-cache (where to save fetched ISFs)
         bool                  auto_fetch_symbols = false;
         bool                  http_symbol_cache  = true;
         // Forensic mode: after the tree is built, pre-warm expensive-but-small

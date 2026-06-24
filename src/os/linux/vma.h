@@ -21,8 +21,9 @@ struct Vma {
     bool executable() const { return  vm_flags & 0x4; }
 };
 
-// Enumerate VMAs of a process by walking mm->mm_mt (Maple Tree).
-// Returns empty list for kernel threads (mm == 0).
+// Enumerate VMAs of a process. On 6.1+ kernels this walks the maple tree
+// (mm->mm_mt); on pre-6.1 kernels it follows the mm->mmap / vm_next linked
+// list. Returns empty list for kernel threads (mm == 0).
 std::vector<Vma> enumerate_vmas(const PhysicalLayer& phys,
                                 const IsfSymbols&    isf,
                                 const KernelContext& kctx,

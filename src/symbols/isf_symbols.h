@@ -35,6 +35,10 @@ public:
     const TypeInfo*   find_type(const std::string& name) const;
     const SymbolInfo* find_symbol(const std::string& name) const;
     u64               field_offset(const std::string& type, const std::string& field) const;
+    // Like field_offset, but returns nullopt instead of throwing when the type
+    // or field is absent. Use this for fields that exist only on some kernel
+    // versions (e.g. mm_struct.mm_mt is 6.1+; pre-6.1 has mmap/vm_next instead).
+    std::optional<u64> field_offset_opt(const std::string& type, const std::string& field) const;
     u64               type_size(const std::string& type) const;
 
     // Read-only access to the full symbol table — used by /sys/kallsyms to
