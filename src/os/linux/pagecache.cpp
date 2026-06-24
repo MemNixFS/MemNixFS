@@ -1486,7 +1486,7 @@ std::string describe_recovered_file_state(const RecoveredFileStats& st) {
     if (st.xarray_pages_seen == 0)
         return "unavailable: inode metadata recovered, but no cached content pages";
     if (st.physical_reads_checked && st.pages_copied == 0)
-        return "unavailable: cached folios were found, but no physical file bytes were readable";
+        return "unavailable: cached folios were found, but all physical bytes were unreadable";
     if (st.missing_ranges_total != 0 && st.dropped_ranges_total != 0)
         return "partial: missing cached pages and unreadable physical pages";
     if (st.missing_ranges_total != 0)
