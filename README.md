@@ -187,3 +187,5 @@ An independent project inspired by, and interoperable with,
 [Volatility 3](https://github.com/volatilityfoundation/volatility3) — not affiliated with or
 endorsed by either. Symbol auto-fetch uses the community
 [Volatility 3 symbol mirrors](https://github.com/Abyss-W4tcher/volatility3-symbols).
+
+If working without external symbols interests you, check out [mquire](https://github.com/trailofbits/mquire) and this cool article [*Linux memory forensics without external dependencies*](https://blog.trailofbits.com/2026/02/25/mquire-linux-memory-forensics-without-external-dependencies/).
