@@ -10,9 +10,13 @@
 #include "os/linux/kern_va_stream.h"
 #include "os/linux/v2p_misc.h"
 #include "os/linux/forensic_snapshot.h"
+#include "os/linux/csv_export.h"
+#include "os/linux/json_export.h"
+#include "os/linux/findevil.h"
 #include "os/linux/strings_search.h"
 #include "os/linux/yara_search.h"
 #include "core/log.h"
+#include "core/app_paths.h"
 #include <fmt/format.h>
 #include <algorithm>
 #include <cstring>
@@ -23,6 +27,10 @@ namespace lmpfs {
 
 std::unique_ptr<Engine> Engine::create(const Options& opts) {
     auto eng = std::unique_ptr<Engine>(new Engine());
+
+    // Register any --yara-rules paths before the VFS (and its lazy YARA
+    // scanners) are built.
+    linux::set_user_yara_paths(opts.yara_rules);
 
     log::note("Opening dump: {}", opts.dump_path.string());
     auto src   = open_best_memory_source(opts.dump_path);   // mmap if available
@@ -559,6 +567,107 @@ std::unique_ptr<Engine> Engine::create(const Options& opts) {
         root->add(forensic);
     }
 
+    // /csv/ — every machine-readable CSV under one flat directory, so an
+    // ingester (Splunk, pandas, a SIEM file-input) can watch a single folder
+    // instead of walking /sys, /forensic and /search for the pieces. The same
+    // data is also exposed co-located; these nodes are lazy, so the folder
+    // costs nothing until a file is read.
+    {
+        auto csv = std::make_shared<vfs::DirNode>("csv");
+        auto add_csv = [&](const std::string& name, ByteBuf (*fn)(const Engine&),
+                           vfs::FileCost cost = {}) {
+            csv->add(std::make_shared<vfs::LazyFileNode>(name,
+                [engp = eng.get(), fn]() { return fn(*engp); }, cost));
+        };
+        // Heavy producers (findevil scan, timeline build) carry the threat-hunt
+        // cost so --precompute stays light — it skips them, matching the
+        // co-located /sys/findevil and /forensic copies. --forensic with
+        // threat-hunt enabled (smart/full) still warms them.
+        const vfs::FileCost heavy{vfs::FileCost::Compute::Expensive,
+                                  vfs::FileCost::Mem::Small,
+                                  vfs::FileCost::Category::ThreatHunt};
+        add_csv("pslist.csv",              linux::format_pslist_csv);
+        add_csv("net_tcp.csv",             linux::format_tcp_csv);
+        add_csv("net_udp.csv",             linux::format_udp_csv);
+        add_csv("findevil.csv",            linux::format_findevil_csv,            heavy);
+        add_csv("findevil_indicators.csv", linux::format_findevil_indicators_csv, heavy);
+        add_csv("malfind.csv",             linux::format_malfind_csv,             heavy);
+        add_csv("timeline.csv",            linux::format_timeline_csv,            heavy);
+        add_csv("yara.csv",                linux::format_yara_csv,                heavy);
+        add_csv("iocs.csv",                linux::format_iocs_csv,                heavy);
+        for (const char* domain : {"process", "network", "shell", "kernel", "findevil"}) {
+            std::string d = domain;
+            csv->add(std::make_shared<vfs::LazyFileNode>("timeline_" + d + ".csv",
+                [engp = eng.get(), d]() { return linux::format_timeline_domain_csv(*engp, d); },
+                heavy));
+        }
+        {
+            const char* readme =
+                "/csv/ — all machine-readable CSV exports in one flat folder\n"
+                "\n"
+                "A convenience aggregate for integrations (Splunk, pandas, SIEM file\n"
+                "inputs): every CSV MemNixFS produces, under stable names, so you can\n"
+                "ingest a single directory instead of walking the tree. The same data\n"
+                "is also exposed co-located (e.g. /sys/net/tcp.csv,\n"
+                "/sys/processes/pslist.csv, /forensic/timeline.csv). Generated on read.\n"
+                "\n"
+                "  pslist.csv                 processes\n"
+                "  net_tcp.csv / net_udp.csv  sockets\n"
+                "  findevil.csv               threat-hunt findings\n"
+                "  findevil_indicators.csv    per-indicator rows\n"
+                "  malfind.csv                injected / anomalous memory regions\n"
+                "  yara.csv                   YARA rule hits across process memory\n"
+                "  iocs.csv                   extracted IOCs (URL/IPv4/email/JWT/AWS)\n"
+                "  timeline.csv               merged forensic timeline\n"
+                "  timeline_<domain>.csv      per-domain timeline splits\n";
+            auto bytes = ByteBuf(readme, readme + std::strlen(readme));
+            csv->add(std::make_shared<vfs::LazyFileNode>("README.txt",
+                [bytes]() { return bytes; }));
+        }
+        root->add(csv);
+    }
+
+    // /json/ — the same aggregate as /csv, but JSON, for tools that prefer it.
+    {
+        auto json = std::make_shared<vfs::DirNode>("json");
+        auto add_json = [&](const std::string& name, ByteBuf (*fn)(const Engine&),
+                            vfs::FileCost cost = {}) {
+            json->add(std::make_shared<vfs::LazyFileNode>(name,
+                [engp = eng.get(), fn]() { return fn(*engp); }, cost));
+        };
+        const vfs::FileCost heavy{vfs::FileCost::Compute::Expensive,
+                                  vfs::FileCost::Mem::Small,
+                                  vfs::FileCost::Category::ThreatHunt};
+        add_json("pslist.json",              linux::format_pslist_json);
+        add_json("net_tcp.json",             linux::format_tcp_json);
+        add_json("net_udp.json",             linux::format_udp_json);
+        add_json("findevil.json",            linux::format_findevil_json,            heavy);
+        add_json("findevil_indicators.json", linux::format_findevil_indicators_json, heavy);
+        add_json("malfind.json",             linux::format_malfind_json,             heavy);
+        add_json("yara.json",                linux::format_yara_json,                heavy);
+        add_json("iocs.json",                linux::format_iocs_json,                heavy);
+        {
+            const char* readme =
+                "/json/ — all machine-readable JSON exports in one flat folder\n"
+                "\n"
+                "The JSON counterpart of /csv, for tools that prefer JSON. Same data\n"
+                "as the co-located files; generated on read.\n"
+                "\n"
+                "  pslist.json                  processes\n"
+                "  net_tcp.json / net_udp.json  sockets\n"
+                "  findevil.json                threat-hunt findings\n"
+                "  findevil_indicators.json     per-indicator rows\n"
+                "  malfind.json                 injected / anomalous memory regions\n"
+                "  yara.json / iocs.json        YARA hits + extracted IOCs\n"
+                "\n"
+                "(timeline is CSV/text only for now -- see /forensic and /csv.)\n";
+            auto bytes = ByteBuf(readme, readme + std::strlen(readme));
+            json->add(std::make_shared<vfs::LazyFileNode>("README.txt",
+                [bytes]() { return bytes; }));
+        }
+        root->add(json);
+    }
+
     // /search/ — corpus-wide scanners. Each file is lazy-loaded; first
     // access triggers a full pass over every process's user memory, so
     // these can take 10s+ on a typical desktop dump.    v0.21 (Tier 4)
@@ -566,9 +675,17 @@ std::unique_ptr<Engine> Engine::create(const Options& opts) {
         auto search = std::make_shared<vfs::DirNode>("search");
         search->add(std::make_shared<vfs::LazyFileNode>("iocs.txt",
             [engp = eng.get()]() { return linux::format_global_iocs(*engp); }));
+        search->add(std::make_shared<vfs::LazyFileNode>("iocs.csv",
+            [engp = eng.get()]() { return linux::format_iocs_csv(*engp); }));
+        search->add(std::make_shared<vfs::LazyFileNode>("iocs.json",
+            [engp = eng.get()]() { return linux::format_iocs_json(*engp); }));
         // v0.22 — YARA scan over every user task's readable VMAs
         search->add(std::make_shared<vfs::LazyFileNode>("yara.txt",
             [engp = eng.get()]() { return linux::format_yara_global(*engp); }));
+        search->add(std::make_shared<vfs::LazyFileNode>("yara.csv",
+            [engp = eng.get()]() { return linux::format_yara_csv(*engp); }));
+        search->add(std::make_shared<vfs::LazyFileNode>("yara.json",
+            [engp = eng.get()]() { return linux::format_yara_json(*engp); }));
         // v0.25 — per-rule subdir: /search/yara/<rule>.txt. One file per
         // compiled rule, containing ONLY that rule's matches. Lets analysts
         // grep / pipe per-rule without re-reading the merged yara.txt.
@@ -587,7 +704,7 @@ std::unique_ptr<Engine> Engine::create(const Options& opts) {
             }
         }
         {
-            const char* readme =
+            std::string readme = fmt::format(
                 "/search/ — corpus-wide scanners\n"
                 "\n"
                 "iocs.txt   URLs, IPv4 addresses, emails, JWT tokens,\n"
@@ -599,13 +716,15 @@ std::unique_ptr<Engine> Engine::create(const Options& opts) {
                 "           readable VMAs. Built-in ruleset covers EICAR,\n"
                 "           Mimikatz, Cobalt Strike, Meterpreter, common\n"
                 "           shellcode markers, UPX, reverse-shell strings\n"
-                "           + crypto-wallet keywords. Drop additional\n"
-                "           rules in $LMPFS_YARA_RULES or in\n"
-                "           %LOCALAPPDATA%\\MemNixFS\\yara\\*.yar.\n"
+                "           + crypto-wallet keywords. Add your own with\n"
+                "           --yara-rules <path>, $LMPFS_YARA_RULES, or the\n"
+                "           per-user drop-in dir:\n"
+                "             {}\n"
                 "\n"
                 "Per-process scopes: /proc/<pid>/strings.txt and\n"
-                "                    /proc/<pid>/yara.txt.\n";
-            auto txt = ByteBuf(readme, readme + std::strlen(readme));
+                "                    /proc/<pid>/yara.txt.\n",
+                paths::user_dir_hint("yara"));
+            auto txt = ByteBuf(readme.begin(), readme.end());
             search->add(std::make_shared<vfs::LazyFileNode>("README.txt",
                 [txt]() { return txt; }));
         }
@@ -625,10 +744,10 @@ std::unique_ptr<Engine> Engine::create(const Options& opts) {
         // also passed --forensic (those bits arrive in forensic_mask). When
         // forensic is what enabled precompute, it's --forensic=full — label the
         // background warming accordingly so the log matches the flag the user gave.
-        eng->warmer_.start_precompute(eng->root_, opts.forensic_mask, 0,
+        eng->warmer_.start_precompute(eng->root_, opts.forensic_mask, opts.warm_jobs,
                                       opts.forensic ? "forensic=full" : "precompute");
     else if (opts.forensic)
-        eng->warmer_.start(eng->root_, opts.forensic_mask);
+        eng->warmer_.start(eng->root_, opts.forensic_mask, opts.warm_jobs);
 
     // Plugin scan (v0.25) is NOT done here — it lives in src/api/lmpfs.cpp
     // (`lmpfs_internal_scan_plugins`). Callers wanting plugins call it
@@ -649,6 +768,27 @@ const linux::SocketIndex& Engine::socket_index() const {
         sockets_ = linux::build_socket_index(*this);
     });
     return sockets_;
+}
+
+const std::vector<linux::TimelineEvent>& Engine::timeline() const {
+    std::call_once(timeline_once_, [this] {
+        timeline_ = linux::build_timeline(*this);
+    });
+    return timeline_;
+}
+
+const std::vector<linux::IocHit>& Engine::global_iocs() const {
+    std::call_once(iocs_once_, [this] {
+        global_iocs_ = linux::collect_global_iocs(*this);
+    });
+    return global_iocs_;
+}
+
+const std::vector<linux::YaraHit>& Engine::global_yara() const {
+    std::call_once(yara_once_, [this] {
+        global_yara_ = linux::collect_global_yara_hits(*this);
+    });
+    return global_yara_;
 }
 
 } // namespace lmpfs

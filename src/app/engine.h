@@ -6,11 +6,16 @@
 #include "os/linux/kernel_resolver.h"
 #include "os/linux/process.h"
 #include "os/linux/netstat.h"
+#include "os/linux/timeline.h"
+#include "os/linux/strings_search.h"
+#include "os/linux/yara_search.h"
 #include "vfs/vfs.h"
 #include "vfs/forensic_warmer.h"
 #include <filesystem>
 #include <memory>
 #include <mutex>
+#include <string>
+#include <vector>
 
 namespace lmpfs {
 
@@ -34,6 +39,13 @@ public:
         // --precompute: exhaustively warm EVERY materializable file in the
         // background (supersedes forensic_mask). Streaming files are skipped.
         bool                  precompute         = false;
+        // --yara-rules: extra YARA rule files or directories to compile into
+        // the ruleset, on top of the built-in defaults, $LMPFS_YARA_RULES, and
+        // the per-user drop-in dir. Each entry is a .yar/.yara file or a folder.
+        std::vector<std::string> yara_rules;
+        // --warm-jobs: worker threads for background pre-warming (0 = auto,
+        // which uses most of the machine's cores). Higher finishes sooner.
+        unsigned                 warm_jobs = 0;
     };
 
     static std::unique_ptr<Engine> create(const Options& opts);
@@ -60,6 +72,21 @@ public:
     // only do it on first need. Thread-safe.
     const linux::SocketIndex& socket_index() const;
 
+    // Lazy-built forensic timeline (every timestamped source merged). Each
+    // view — /forensic/timeline.{txt,csv} and /csv/timeline*.csv — renders
+    // from this one cached build instead of re-aggregating. Thread-safe.
+    const std::vector<linux::TimelineEvent>& timeline() const;
+
+    // Lazy-built global IOC scan (URLs / IPv4 / emails / JWT / AWS keys across
+    // every process). The /search, /csv and /json iocs views share this one
+    // pass instead of each re-scanning. Thread-safe.
+    const std::vector<linux::IocHit>& global_iocs() const;
+
+    // Lazy-built global YARA scan (every rule over every process). The txt,
+    // csv and json yara views share this one pass; empty if YARA isn't built
+    // in. Thread-safe.
+    const std::vector<linux::YaraHit>& global_yara() const;
+
     // Refresh-state hook for the future (live targets); for snapshot dumps it's a no-op.
     void refresh();
 
@@ -77,6 +104,19 @@ private:
     // Lazy socket-index cache. mutable so the const accessor can populate.
     mutable std::once_flag              sockets_once_;
     mutable linux::SocketIndex          sockets_;
+
+    // Lazy timeline cache. build_timeline() is expensive and every timeline
+    // view needs the same events, so build once. mutable for the const
+    // accessor; declared before warmer_ so it outlives the warming threads.
+    mutable std::once_flag              timeline_once_;
+    mutable std::vector<linux::TimelineEvent> timeline_;
+
+    // Lazy global-IOC cache. mutable for the const accessor; before warmer_.
+    mutable std::once_flag              iocs_once_;
+    mutable std::vector<linux::IocHit>  global_iocs_;
+
+    mutable std::once_flag              yara_once_;
+    mutable std::vector<linux::YaraHit> global_yara_;
 
     // Forensic-mode background warmer. MUST be the last member: members are
     // destroyed in reverse declaration order, so this one is torn down first,

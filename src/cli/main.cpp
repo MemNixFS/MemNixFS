@@ -88,7 +88,9 @@ void usage() {
         "                      streams (e.g. /mem/kern_va.raw, /mem/phys.raw).\n"
         "                      OFF/LEN accept 0x... hex, decimal, or K/M/G/T\n"
         "                      suffix (e.g. --offset 0x80000000 --length 64K).\n"
-        "  export <dir>        Write the VFS to a real folder (huge; avoid)\n"
+        "  export [PATH] DIR   Write the VFS to a real folder. Whole tree is\n"
+        "                      huge; pass a subtree, e.g. 'export /csv out' to\n"
+        "                      dump just the CSV exports as real files.\n"
         "  kallsyms [name]     Extract kernel symbols straight from the dump\n"
         "                      (no ISF needed). With [name], print just that symbol.\n"
         "  dmesg               Print the kernel's printk ring buffer\n"
@@ -130,10 +132,18 @@ void usage() {
         "                      (findevil, /search yara+iocs, /forensic aggregates,\n"
         "                      /proc per-process, /files,/fs content) stay\n"
         "                      on-demand -- add --forensic to also warm those.\n"
+        "  --warm-jobs N       Worker threads for --precompute/--forensic warming\n"
+        "                      (0 = auto, most cores). Raise to finish warming\n"
+        "                      sooner; lower to leave more CPU for other work.\n"
+        "  --yara-rules PATH   Add a YARA rule file (.yar/.yara) or a folder of\n"
+        "                      them to /search/yara, on top of the built-ins.\n"
+        "                      Repeatable. See also $LMPFS_YARA_RULES below.\n"
         "Environment:\n"
-        "  LMPFS_SYMBOL_CACHE  Override the symbol cache dir for both saving and\n"
-        "                      searching (default: %%LOCALAPPDATA%%/MemNixFS/\n"
-        "                      symbols). --symbol-cache takes precedence.\n"
+        "  LMPFS_SYMBOL_CACHE  Override the symbol cache dir (saving + searching).\n"
+        "                      --symbol-cache takes precedence.\n"
+        "  LMPFS_YARA_RULES    Extra YARA rule files/dirs (';'-separated on Windows,\n"
+        "                      ':' on Linux), compiled into /search/yara alongside\n"
+        "                      the built-in rules and the per-user yara/ drop-in dir.\n"
         "  LMPFS_ISF_MIRRORS   Semicolon-separated list of mirror URL templates,\n"
         "                      each containing {{KEY}} (banner sha256) and/or\n"
         "                      {{KEY:0:2}} (first 2 chars).\n"
@@ -205,11 +215,14 @@ int main(int argc, char** argv) {
     std::filesystem::path dump, syms, vmlinux, symbol_cache;
     std::string command = "overview";
     std::string mount_point;
+    std::string export_path;               // export <vfs-path> <dir>: subtree (empty = whole tree)
     bool auto_fetch = false;
     bool no_http_cache = false;
     bool forensic = false;
     bool precompute = false;               // --precompute: warm everything
+    std::vector<std::string> yara_rules;   // --yara-rules: extra .yar files/dirs
     std::string forensic_mode = "smart";   // quick | smart | full
+    unsigned warm_jobs = 0;                // --warm-jobs: 0 = auto
     std::string forensic_include;          // comma list of categories to add
     std::string forensic_exclude;          // comma list of categories to drop
     // Optional window for `cat` (useful for /mem/{phys,kern_va}.raw — those
@@ -258,6 +271,9 @@ int main(int argc, char** argv) {
             forensic = true; forensic_exclude = argv[++i];
         }
         else if (a == "--precompute") precompute = true;
+        else if (a == "--warm-jobs" && i + 1 < argc)
+            warm_jobs = static_cast<unsigned>(parse_u64(argv[++i]));
+        else if (a == "--yara-rules" && i + 1 < argc) yara_rules.push_back(argv[++i]);
         else if (a == "--offset"   && i + 1 < argc) cat_offset = parse_u64(argv[++i]);
         else if (a == "--length"   && i + 1 < argc) cat_length = parse_u64(argv[++i]);
         else if (a == "list" || a == "tree" || a == "dmesg" || a == "overview") command = a;
@@ -265,7 +281,12 @@ int main(int argc, char** argv) {
             command = "cat"; mount_point = argv[++i];   // mount_point reused as path
         }
         else if (a == "export" && i + 1 < argc) {
-            command = "export"; mount_point = argv[++i];
+            command = "export";
+            mount_point = argv[++i];          // out dir (or the subtree, if a 2nd arg follows)
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                export_path = mount_point;    // first arg was a VFS subtree path (e.g. /csv)
+                mount_point = argv[++i];      // second arg is the out dir
+            }
         }
         else if (a == "mount" && i + 1 < argc) {
             command = "mount"; mount_point = argv[++i];
@@ -339,6 +360,8 @@ int main(int argc, char** argv) {
         // the light, system-wide files too) on top of its heavy per-process /
         // findevil / yara analytics. So full ⊇ precompute ⊇ the rest.
         opts.precompute         = precompute || (forensic && forensic_mode == "full");
+        opts.yara_rules         = yara_rules;
+        opts.warm_jobs          = warm_jobs;
         if (forensic) {
             using Cat = lmpfs::vfs::FileCost::Category;
             // Map a category token to its bit, or 0 if unknown.
@@ -473,8 +496,17 @@ int main(int argc, char** argv) {
             }
         } else if (command == "export") {
             std::filesystem::path out(mount_point);
-            export_tree(eng->vfs_root(), out);
-            fmt::print("Exported VFS to: {}\n", out.string());
+            lmpfs::vfs::NodePtr node =
+                export_path.empty() ? eng->vfs_root()
+                                    : lmpfs::vfs::resolve(eng->vfs_root(), export_path);
+            if (!node) {
+                fmt::print(stderr, "export: no such VFS path: {}\n", export_path);
+                return 1;
+            }
+            export_tree(node, out);
+            fmt::print("Exported {} to: {}\n",
+                       export_path.empty() ? std::string("the whole VFS") : export_path,
+                       out.string());
         }
 #ifdef LMPFS_HAS_WINFSP
         else if (command == "mount") {

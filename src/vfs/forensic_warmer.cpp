@@ -13,6 +13,15 @@ namespace {
 constexpr u64 kWarnBytes = 16ull * 1024 * 1024;   // 16 MiB
 }
 
+namespace detail {
+std::string format_warm_duration(double seconds) {
+    if (seconds < 60.0)
+        return fmt::format("{:.1f}s", seconds);
+    const int total = static_cast<int>(seconds);
+    return fmt::format("{}m {:02d}s", total / 60, total % 60);
+}
+}  // namespace detail
+
 ForensicWarmer::~ForensicWarmer() { join(); }
 
 void ForensicWarmer::collect(const NodePtr& node, bool heavy_subtree) {
@@ -94,8 +103,13 @@ void ForensicWarmer::worker() {
 void ForensicWarmer::report_summary() {
     if (reported_.exchange(true)) return;   // log exactly once
     if (warmed_.load(std::memory_order_relaxed) == 0) return;
-    log::note("{}: warming complete — {} files cached (~{} MB resident){}",
-              label_,
+    // Elapsed since launch(): seconds for a quick precompute, m:ss once
+    // --forensic=full's corpus scans push it into the minutes.
+    const double secs = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - start_).count();
+    const std::string elapsed = detail::format_warm_duration(secs);
+    log::note("{}: warming complete in {} — {} files cached (~{} MB resident){}",
+              label_, elapsed,
               warmed_.load(std::memory_order_relaxed),
               total_bytes_.load(std::memory_order_relaxed) / (1024 * 1024),
               oversized_.load(std::memory_order_relaxed)
@@ -126,6 +140,7 @@ void ForensicWarmer::start_precompute(const NodePtr& root, unsigned extra_mask,
 
 void ForensicWarmer::launch(const char* label, unsigned jobs) {
     label_ = label;
+    start_ = std::chrono::steady_clock::now();
     if (targets_.empty()) {
         log::info("{}: nothing to warm — browsing is already cheap", label);
         return;

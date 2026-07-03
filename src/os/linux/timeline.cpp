@@ -540,13 +540,13 @@ std::vector<TimelineEvent> build_timeline(const Engine& eng) {
 }
 
 ByteBuf format_timeline_txt(const Engine& eng) {
-    auto out = render_timeline_txt(build_timeline(eng), "/forensic/timeline.txt",
+    auto out = render_timeline_txt(eng.timeline(), "/forensic/timeline.txt",
         "Legacy merged view; split domains live under /forensic/timeline/.");
     return ByteBuf(out.begin(), out.end());
 }
 
 ByteBuf format_timeline_summary_txt(const Engine& eng) {
-    auto ev = build_timeline(eng);
+    auto ev = eng.timeline();
     std::unordered_map<std::string, std::size_t> counts;
     std::unordered_map<std::string, std::size_t> type_counts;
     for (const auto& e : ev) {
@@ -645,7 +645,7 @@ ByteBuf format_timeline_summary_txt(const Engine& eng) {
 }
 
 ByteBuf format_timeline_csv(const Engine& eng) {
-    auto out = render_timeline_csv(build_timeline(eng));
+    auto out = render_timeline_csv(eng.timeline());
     return ByteBuf(out.begin(), out.end());
 }
 
@@ -657,14 +657,14 @@ ByteBuf format_timeline_domain_txt(const Engine& eng, const std::string& domain)
         note = "FindEvil rows are snapshot indicators promoted from /sys/findevil/indicators.txt.";
     else if (domain == "all")
         note = "All normalized domains merged together.";
-    auto out = render_timeline_txt(filter_domain(build_timeline(eng), domain),
+    auto out = render_timeline_txt(filter_domain(eng.timeline(), domain),
                                    "/forensic/timeline/" + domain + ".txt",
                                    note);
     return ByteBuf(out.begin(), out.end());
 }
 
 ByteBuf format_timeline_domain_csv(const Engine& eng, const std::string& domain) {
-    auto out = render_timeline_csv(filter_domain(build_timeline(eng), domain));
+    auto out = render_timeline_csv(filter_domain(eng.timeline(), domain));
     return ByteBuf(out.begin(), out.end());
 }
 

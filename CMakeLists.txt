@@ -125,6 +125,8 @@ add_library(memnixfs_core STATIC
     src/core/log.h
     src/core/log.cpp
     src/core/stream.h
+    src/core/app_paths.h
+    src/core/app_paths.cpp
 
     src/io/memory_source.h
     src/io/file_memory_source.cpp
@@ -368,6 +370,16 @@ if(LMPFS_BUILD_TESTS)
     target_include_directories(findevil_indicators_test PRIVATE src)
     target_link_libraries(findevil_indicators_test PRIVATE memnixfs_core)
     add_test(NAME findevil_indicators_test COMMAND findevil_indicators_test)
+
+    add_executable(app_paths_test tests/unit/app_paths_test.cpp)
+    target_include_directories(app_paths_test PRIVATE src)
+    target_link_libraries(app_paths_test PRIVATE memnixfs_core)
+    add_test(NAME app_paths_test COMMAND app_paths_test)
+
+    add_executable(forensic_warmer_test tests/unit/forensic_warmer_test.cpp)
+    target_include_directories(forensic_warmer_test PRIVATE src)
+    target_link_libraries(forensic_warmer_test PRIVATE memnixfs_core)
+    add_test(NAME forensic_warmer_test COMMAND forensic_warmer_test)
 
     # Sample plugin DLL — drops into LMPFS_PLUGINS_DIR or
     # %LOCALAPPDATA%\MemNixFS\plugins to demonstrate the plugin SDK.

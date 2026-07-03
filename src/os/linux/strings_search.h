@@ -58,4 +58,15 @@ ByteBuf format_proc_strings(const Engine& eng, const Process& p);
 // by IOC type, one hit per line.
 ByteBuf format_global_iocs(const Engine& eng);
 
+// One extracted IOC row. The global pass is expensive, so it is cached on the
+// Engine (Engine::global_iocs()) and the /search, /csv and /json iocs views
+// all render from that single scan.
+struct IocHit { std::string type, value; u32 pid; std::string comm; };
+std::vector<IocHit> collect_global_iocs(const Engine& eng);
+
+// Machine-readable IOC exports: rows of {type, value, pid, comm} from the same
+// global pass, for /search/iocs.{csv,json} and the /csv + /json folders.
+ByteBuf format_iocs_csv(const Engine& eng);
+ByteBuf format_iocs_json(const Engine& eng);
+
 } // namespace lmpfs::linux

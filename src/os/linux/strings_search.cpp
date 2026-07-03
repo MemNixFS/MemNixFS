@@ -271,6 +271,41 @@ void extract_iocs(std::string_view s, IocCounts& c) {
     if (auto v = find_aws_key(s); !v.empty()) c.aws_keys.push_back(std::move(v));
 }
 
+// ---- machine-readable IOC exports -----------------------------------------
+// (collect_global_iocs is defined below at namespace scope, not here in the
+//  anonymous namespace, so Engine::global_iocs() can cache it. csv/json escapers
+//  follow.)
+
+std::string csv_esc(const std::string& s) {
+    bool needs = false;
+    for (char ch : s) if (ch == ',' || ch == '"' || ch == '\r' || ch == '\n') { needs = true; break; }
+    if (!needs) return s;
+    std::string o; o.push_back('"');
+    for (char ch : s) { if (ch == '"') o.push_back('"'); o.push_back(ch); }
+    o.push_back('"');
+    return o;
+}
+
+std::string json_esc(const std::string& s) {
+    std::string o; o.push_back('"');
+    for (char ch : s) {
+        switch (ch) {
+            case '"':  o += "\\\""; break;
+            case '\\': o += "\\\\"; break;
+            case '\n': o += "\\n";  break;
+            case '\r': o += "\\r";  break;
+            case '\t': o += "\\t";  break;
+            default:
+                if (static_cast<unsigned char>(ch) < 0x20)
+                    o += fmt::format("\\u{:04x}",
+                                     static_cast<unsigned>(static_cast<unsigned char>(ch)));
+                else o.push_back(ch);
+        }
+    }
+    o.push_back('"');
+    return o;
+}
+
 } // anonymous
 
 std::vector<StringHit> extract_strings(const Engine& eng, const Process& p,
@@ -426,6 +461,53 @@ ByteBuf format_global_iocs(const Engine& eng) {
     emit_section("JWT tokens",    per_pid_jwt);
     emit_section("AWS access keys", per_pid_aws);
 
+    return ByteBuf(out.begin(), out.end());
+}
+
+// Global IOC pass: extract strings per process, filter through the IOC battery
+// (URL/IPv4/email/JWT/AWS). At namespace scope (moved out of the anonymous
+// namespace) so Engine::global_iocs() can cache it across the txt/csv/json views.
+std::vector<IocHit> collect_global_iocs(const Engine& eng) {
+    std::vector<IocHit> out;
+    constexpr std::size_t kCap = 50000;
+    for (const auto& p : eng.processes()) {
+        if (p.mm == 0) continue;
+        if (out.size() >= kCap) break;
+        auto hits = extract_strings(eng, p, /*min_len=*/8, /*max_hits=*/1500);
+        for (const auto& h : hits) {
+            IocCounts c;
+            extract_iocs(h.text, c);
+            auto add = [&](const char* type, std::vector<std::string>& vals) {
+                for (auto& v : vals)
+                    out.push_back({type, std::move(v), p.pid, p.comm});
+            };
+            add("url", c.urls);  add("ipv4", c.ipv4s);  add("email", c.emails);
+            add("jwt", c.jwts);  add("aws_key", c.aws_keys);
+            if (out.size() >= kCap) break;
+        }
+    }
+    return out;
+}
+
+ByteBuf format_iocs_csv(const Engine& eng) {
+    std::string out = "type,value,pid,comm\r\n";
+    for (const auto& h : eng.global_iocs())
+        out += fmt::format("{},{},{},{}\r\n",
+                           h.type, csv_esc(h.value), h.pid, csv_esc(h.comm));
+    return ByteBuf(out.begin(), out.end());
+}
+
+ByteBuf format_iocs_json(const Engine& eng) {
+    std::string out = "[";
+    const auto& hits = eng.global_iocs();
+    for (std::size_t i = 0; i < hits.size(); ++i) {
+        const auto& h = hits[i];
+        out += fmt::format(
+            "{}\n  {{\"type\":{},\"value\":{},\"pid\":{},\"comm\":{}}}",
+            i ? "," : "",
+            json_esc(h.type), json_esc(h.value), h.pid, json_esc(h.comm));
+    }
+    out += "\n]\n";
     return ByteBuf(out.begin(), out.end());
 }
 

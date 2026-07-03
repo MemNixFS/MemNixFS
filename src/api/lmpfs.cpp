@@ -26,6 +26,7 @@
 #include "os/linux/kva_reader.h"
 #include "formats/physical_layer.h"
 #include "core/log.h"
+#include "core/app_paths.h"
 
 #include <cstdlib>
 #include <cstring>
@@ -602,19 +603,9 @@ void scan_and_load_plugins(Engine* eng) {
         }
         flush(acc);
     }
-    // 2) Default user-data dir.
-#ifdef _WIN32
-    if (const char* la = std::getenv("LOCALAPPDATA")) {
-        total += load_plugins_from(eng, plugins_root,
-            std::filesystem::path(la) / "MemNixFS" / "plugins");
-    }
-#else
-    if (const char* home = std::getenv("HOME")) {
-        total += load_plugins_from(eng, plugins_root,
-            std::filesystem::path(home) / ".local" / "share" /
-            "memnixfs" / "plugins");
-    }
-#endif
+    // 2) Default per-user dirs (same resolver as symbols + YARA rules).
+    for (const auto& d : paths::user_dirs("plugins"))
+        total += load_plugins_from(eng, plugins_root, d);
     if (total > 0) {
         log::info("plugin: loaded {} plugin(s) under /plugins/", total);
     }
@@ -628,9 +619,11 @@ void scan_and_load_plugins(Engine* eng) {
         "    int lmpfs_plugin_init(lmpfs_handle_t engine);\n"
         "\n"
         "Discovery order:\n"
-        "  1. $LMPFS_PLUGINS_DIR   (semicolon-separated list of dirs)\n"
-        "  2. %LOCALAPPDATA%\\MemNixFS\\plugins\\*.dll  (Windows)\n"
-        "  3. ~/.local/share/memnixfs/plugins/*.so      (POSIX)\n"
+        "  1. $LMPFS_PLUGINS_DIR   (';'-separated on Windows, ':' on Linux)\n"
+        "  2. Per-user plugins dir (same resolver as symbols + YARA rules):\n"
+        "       Windows: %LOCALAPPDATA%\\MemNixFS\\plugins\\*.dll\n"
+        "       Linux:   ~/.local/share/memnixfs/plugins/*.so\n"
+        "                (or ~/.cache/lmpfs/plugins/)\n"
         "\n"
         "See src/api/lmpfs_plugin.h for the public ABI + a sample plugin.\n";
     auto readme_bytes = ByteBuf(readme, readme + std::strlen(readme));

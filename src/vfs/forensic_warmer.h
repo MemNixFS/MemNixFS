@@ -17,10 +17,20 @@
 #pragma once
 #include "vfs/vfs.h"
 #include <atomic>
+#include <chrono>
+#include <string>
 #include <thread>
 #include <vector>
 
 namespace lmpfs::vfs {
+
+namespace detail {
+// Format an elapsed warm time for the "warming complete in ..." line: one
+// decimal of seconds under a minute ("12.3s"), "Nm SSs" beyond (so a long
+// --forensic=full run reads as "4m 07s" rather than "247.6s"). Exposed here so
+// both branches can be unit-tested without a live mount.
+std::string format_warm_duration(double seconds);
+}  // namespace detail
 
 class ForensicWarmer {
 public:
@@ -56,6 +66,7 @@ private:
     unsigned mask_ = 0;
     bool     warm_all_ = false;   // precompute: warm every warmable() node
     std::string label_ = "warming";
+    std::chrono::steady_clock::time_point start_;   // set when warming launches
 
     std::vector<NodePtr>     targets_;
     std::atomic<std::size_t> next_{0};

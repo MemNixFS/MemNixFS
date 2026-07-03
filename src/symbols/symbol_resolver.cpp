@@ -7,6 +7,7 @@
 #include "os/linux/btf_probe.h"
 #include "core/error.h"
 #include "core/log.h"
+#include "core/app_paths.h"
 #include <cctype>
 #include <cstdlib>
 #include <filesystem>
@@ -14,6 +15,8 @@
 
 #ifdef _WIN32
 #  include <windows.h>
+#else
+#  include <unistd.h>   // readlink() for the exe path
 #endif
 
 namespace lmpfs {
@@ -90,13 +93,9 @@ std::vector<fs::path> standard_cache_dirs(const fs::path& preferred) {
     dirs.emplace_back("symbols");
     if (const char* env = std::getenv("LMPFS_SYMBOL_CACHE"))
         dirs.emplace_back(env);
-#ifdef _WIN32
-    if (const char* la = std::getenv("LOCALAPPDATA"))
-        dirs.emplace_back(fs::path(la) / "MemNixFS" / "symbols");
-#else
-    if (const char* home = std::getenv("HOME"))
-        dirs.emplace_back(fs::path(home) / ".cache/lmpfs/symbols");
-#endif
+    // Per-user cache/data dirs (same resolver as YARA rules + plugins).
+    for (auto& d : paths::user_dirs("symbols"))
+        dirs.push_back(std::move(d));
     return dirs;
 }
 
@@ -131,7 +130,16 @@ fs::path bundled_script_path() {
     wchar_t buf[MAX_PATH]; GetModuleFileNameW(nullptr, buf, MAX_PATH);
     fs::path exe_dir = fs::path(buf).parent_path();
 #else
-    fs::path exe_dir = fs::current_path();
+    // Find the real executable directory (not cwd) so exe-relative discovery of
+    // tools/fetch_symbols.sh works regardless of where memnixfs is run from —
+    // matching the Windows behaviour above.
+    fs::path exe_dir;
+    {
+        char linkbuf[4096];
+        ssize_t n = ::readlink("/proc/self/exe", linkbuf, sizeof(linkbuf) - 1);
+        if (n > 0) { linkbuf[n] = '\0'; exe_dir = fs::path(linkbuf).parent_path(); }
+        else       { exe_dir = fs::current_path(); }
+    }
 #endif
     // Walk a few parents up from the exe to find the project / install root.
     fs::path p = exe_dir;
@@ -186,13 +194,10 @@ fs::path cache_output_dir(const fs::path& preferred) {
     if (!preferred.empty()) return preferred;
     if (const char* env = std::getenv("LMPFS_SYMBOL_CACHE"))
         return fs::path(env);
-#ifdef _WIN32
-    if (const char* la = std::getenv("LOCALAPPDATA"))
-        return fs::path(la) / "MemNixFS" / "symbols";
-#else
-    if (const char* home = std::getenv("HOME"))
-        return fs::path(home) / ".cache/lmpfs/symbols";
-#endif
+    // Symbols are regenerable → the cache root
+    // (~/.cache/lmpfs/symbols | %LOCALAPPDATA%\MemNixFS\symbols).
+    if (auto d = paths::user_write_dir("symbols", /*cache=*/true); !d.empty())
+        return d;
     return fs::current_path() / "symbols" / "linux";
 }
 
@@ -260,11 +265,12 @@ fs::path try_fetch(const std::string& release, const fs::path& out_dir,
     }
     throw_error(
         "No ISF found for kernel release '{}' (distro hint: {}).\n"
-        "Searched: {}, ./symbols/linux/, $LMPFS_SYMBOL_CACHE, %LOCALAPPDATA%/MemNixFS/symbols.\n"
+        "Searched: {}, ./symbols/linux/, $LMPFS_SYMBOL_CACHE, {}.\n"
         "{}",
         release, distro,
         opts.user_path.empty() ? std::string("(no --symbols path)")
                                : opts.user_path.string(),
+        paths::user_dir_hint("symbols"),
         hint);
 }
 

@@ -60,6 +60,8 @@ M:\
 ├── sys\             system-wide: shell history, banner, dmesg, modules, net\, processes\, findevil\, etc
 ├── fs\              reconstructed root filesystem (recovers cached file contents)
 ├── forensic\        timeline.{txt,csv} + per-domain splits + JSON/CSV snapshot
+├── csv\             every CSV export in one flat folder (Splunk / pandas / SIEM)
+├── json\            same aggregate as csv\, but JSON
 ├── search\          yara\, iocs, strings, entropy
 ├── mem\             phys.raw + windowed kernel-VA streams
 └── plugins\         third-party file producers
@@ -88,7 +90,7 @@ Grab a build (or [build from source](docs/building.md)), then:
 $ memnixfs --dump memory.lime list                 # list processes (no symbols needed)
 $ memnixfs --dump memory.lime mount M:             # mount the whole tree (Windows: WinFsp)
 $ memnixfs --dump memory.lime cat /sys/findevil/findevil.txt   # read one file, no mount
-$ memnixfs --dump memory.lime export ./out         # or export everything to a folder
+$ memnixfs --dump memory.lime export /csv ./out    # export a subtree (all CSVs) as real files
 ```
 
 > **Windows — the `mount` command requires [WinFsp](https://winfsp.dev/rel/).** It is a
@@ -119,6 +121,7 @@ overview. Everything else is optional — most useful first:
 | `--precompute` | Background-warm the system-wide analysis files so the tree shows real sizes and opens instantly. |
 | `--offset OFF` / `--length LEN` | Window into a huge file with `cat` (e.g. `/mem/phys.raw`). Accept `0x…` hex, decimal, or `K/M/G/T` suffixes. |
 | `--forensic-include CATS` / `--forensic-exclude CATS` | Add or drop forensic categories (`system-info`, `threat-hunt`, `per-process`, `yara`). |
+| `--yara-rules <path>` | Add a YARA rule file (`.yar`/`.yara`) or a folder of them to `/search/yara`, on top of the built-ins. Repeatable. Also loaded from `$LMPFS_YARA_RULES` and the per-user `yara/` drop-in dir (`~/.local/share/memnixfs/yara` or `~/.cache/lmpfs/yara` on Linux, `%LOCALAPPDATA%\MemNixFS\yara` on Windows). |
 | `-v`, `--verbose` | Show the full diagnostic pipeline, including warnings. `-vv` adds trace. |
 | `-q`, `--quiet` | Print critical errors only. |
 | `-h`, `--help` | Full command and option reference. |
@@ -186,4 +189,8 @@ An independent project inspired by, and interoperable with,
 [MemProcFS](https://github.com/ufrisk/MemProcFS) and
 [Volatility 3](https://github.com/volatilityfoundation/volatility3) — not affiliated with or
 endorsed by either. Symbol auto-fetch uses the community
-[Volatility 3 symbol mirrors](https://github.com/Abyss-W4tcher/volatility3-symbols).
+[Volatility 3 symbol mirrors](https://github.com/Abyss-W4tcher/volatility3-symbols); and for
+memory analysis without external symbols at all, Alessandro Gario's
+[mquire](https://github.com/trailofbits/mquire) ([Linux memory forensics without external
+dependencies](https://blog.trailofbits.com/2026/02/25/mquire-linux-memory-forensics-without-external-dependencies/))
+is well worth a read.

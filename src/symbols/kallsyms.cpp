@@ -16,6 +16,7 @@
 //
 #include "symbols/kallsyms.h"
 #include "core/log.h"
+#include "core/app_paths.h"
 #include <fmt/format.h>
 #include <algorithm>
 #include <cstring>
@@ -858,8 +859,8 @@ KallsymsResult extract_kallsyms(const PhysicalLayer& phys) {
     log::warn("kallsyms: downstream features that need kernel-VA reads "
               "(modules, dmesg, full DTB walk) will be degraded. To recover, "
               "supply a symbol-rich ISF: run with --auto-fetch, or --vmlinux "
-              "<path>, or place a known-good ISF in "
-              "%LOCALAPPDATA%\\MemNixFS\\symbols\\.");
+              "<path>, or place a known-good ISF in {}.",
+              paths::user_dir_hint("symbols"));
     return r;
 }
 

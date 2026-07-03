@@ -5,6 +5,7 @@
 #include "symbols/isf_symbols.h"
 #include "arch/x86_64/paging.h"
 #include "core/log.h"
+#include "core/app_paths.h"
 #include <fmt/format.h>
 #include <filesystem>
 #include <fstream>
@@ -17,6 +18,14 @@
 #endif
 
 namespace lmpfs::linux {
+
+// User-supplied rule paths from --yara-rules. Stored regardless of whether YARA
+// is compiled into this binary; only the real scanner below reads them.
+namespace { std::vector<std::string> g_user_yara_paths; }
+
+void set_user_yara_paths(std::vector<std::string> paths) {
+    g_user_yara_paths = std::move(paths);
+}
 
 #ifndef LMPFS_HAS_YARA
 
@@ -33,6 +42,16 @@ ByteBuf format_yara_per_pid(const Engine&, const Process& p) {
         "# Rebuild with -DLMPFS_BUILD_YARA=ON.\n", p.pid);
     return ByteBuf(txt.begin(), txt.end());
 }
+
+ByteBuf format_yara_csv(const Engine&) {
+    const char h[] = "rule,pid,comm,vma_start,hit_va,preview\r\n";
+    return ByteBuf(h, h + sizeof(h) - 1);
+}
+ByteBuf format_yara_json(const Engine&) {
+    const char j[] = "[]\n";
+    return ByteBuf(j, j + sizeof(j) - 1);
+}
+std::vector<YaraHit> collect_global_yara_hits(const Engine&) { return {}; }
 
 #else   // LMPFS_HAS_YARA — real implementation below.
 
@@ -269,7 +288,15 @@ CompiledRules& get_compiled_rules() {
         if (rc != 0) {
             summary += fmt::format(" (defaults: {} error(s) — see logs)", rc);
         }
-        // 2) env var
+        // 2) --yara-rules (CLI): explicit, highest-precedence user source.
+        for (const auto& raw : g_user_yara_paths) {
+            std::filesystem::path p = raw;
+            if (std::filesystem::is_directory(p))
+                try_add_directory(c, p, summary, ok, bad);
+            else
+                try_add_file(c, p, summary, ok, bad);
+        }
+        // 3) $LMPFS_YARA_RULES env var (':'/';'-separated files or dirs)
         if (const char* env = std::getenv("LMPFS_YARA_RULES")) {
             std::string raw = env;
             std::string acc;
@@ -295,12 +322,10 @@ CompiledRules& get_compiled_rules() {
             }
             flush(acc);
         }
-        // 3) default per-user dir
-        if (const char* la = std::getenv("LOCALAPPDATA")) {
-            std::filesystem::path d = std::filesystem::path(la) /
-                                       "MemNixFS" / "yara";
+        // 4) Per-user drop-in dirs — same resolver on Windows and Linux, so
+        //    ~/.local/share/memnixfs/yara and ~/.cache/lmpfs/yara both work.
+        for (const auto& d : paths::user_dirs("yara"))
             try_add_directory(c, d, summary, ok, bad);
-        }
         if (ok > 0)  summary += fmt::format("\nUser rules added: {} OK, {} skipped.", ok, bad);
         else if (bad > 0) summary += fmt::format("\nUser rules: {} skipped.", bad);
 
@@ -460,6 +485,46 @@ ByteBuf format_results(const std::vector<ScanState::Hit>& hits,
     return ByteBuf(out.begin(), out.end());
 }
 
+// ---- machine-readable exports: same global hits, rendered CSV/JSON ---------
+std::vector<ScanState::Hit> collect_global_hits(const Engine& eng, YR_RULES* rules) {
+    std::vector<ScanState::Hit> hits;
+    for (const auto& p : eng.processes()) {
+        scan_process(eng, p, rules, hits);
+        if (hits.size() >= 5000) break;
+    }
+    return hits;
+}
+
+std::string csv_field(const std::string& s) {
+    bool needs = false;
+    for (char ch : s) if (ch == ',' || ch == '"' || ch == '\r' || ch == '\n') { needs = true; break; }
+    if (!needs) return s;
+    std::string o; o.push_back('"');
+    for (char ch : s) { if (ch == '"') o.push_back('"'); o.push_back(ch); }
+    o.push_back('"');
+    return o;
+}
+
+std::string json_field(const std::string& s) {
+    std::string o; o.push_back('"');
+    for (char ch : s) {
+        switch (ch) {
+            case '"':  o += "\\\""; break;
+            case '\\': o += "\\\\"; break;
+            case '\n': o += "\\n";  break;
+            case '\r': o += "\\r";  break;
+            case '\t': o += "\\t";  break;
+            default:
+                if (static_cast<unsigned char>(ch) < 0x20)
+                    o += fmt::format("\\u{:04x}",
+                                     static_cast<unsigned>(static_cast<unsigned char>(ch)));
+                else o.push_back(ch);
+        }
+    }
+    o.push_back('"');
+    return o;
+}
+
 } // anonymous
 
 ByteBuf format_yara_global(const Engine& eng) {
@@ -491,6 +556,44 @@ ByteBuf format_yara_per_pid(const Engine& eng, const Process& p) {
     scan_process(eng, p, cache.rules, hits);
     return format_results(hits, cache.load_summary,
                            fmt::format("pid {} ({})", p.pid, p.comm));
+}
+
+// Public, cached entry point: run the internal global scan and convert its
+// hits to the public YaraHit so Engine::global_yara() can memoize one pass
+// across the txt/csv/json yara views. (collect_global_hits + get_compiled_rules
+// are file-local, so this must live at namespace scope, not in the header.)
+std::vector<YaraHit> collect_global_yara_hits(const Engine& eng) {
+    std::vector<YaraHit> out;
+    auto& cache = get_compiled_rules();
+    if (!cache.rules) return out;
+    for (const auto& h : collect_global_hits(eng, cache.rules))
+        out.push_back({h.rule, h.pid, h.comm, h.vma_start, h.hit_va, h.preview});
+    return out;
+}
+
+ByteBuf format_yara_csv(const Engine& eng) {
+    std::string out = "rule,pid,comm,vma_start,hit_va,preview\r\n";
+    for (const auto& h : eng.global_yara())
+        out += fmt::format("{},{},{},{:#x},{:#x},{}\r\n",
+                           csv_field(h.rule), h.pid, csv_field(h.comm),
+                           h.vma_start, h.hit_va, csv_field(h.preview));
+    return ByteBuf(out.begin(), out.end());
+}
+
+ByteBuf format_yara_json(const Engine& eng) {
+    std::string out = "[";
+    const auto& hits = eng.global_yara();
+    for (std::size_t i = 0; i < hits.size(); ++i) {
+        const auto& h = hits[i];
+        out += fmt::format(
+            "{}\n  {{\"rule\":{},\"pid\":{},\"comm\":{},"
+            "\"vma_start\":\"{:#x}\",\"hit_va\":\"{:#x}\",\"preview\":{}}}",
+            i ? "," : "",
+            json_field(h.rule), h.pid, json_field(h.comm),
+            h.vma_start, h.hit_va, json_field(h.preview));
+    }
+    out += "\n]\n";
+    return ByteBuf(out.begin(), out.end());
 }
 
 // ---- per-rule subdir (v0.25) ---------------------------------------------
