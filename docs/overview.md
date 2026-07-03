@@ -110,10 +110,18 @@ M:\forensic\
         snapshot.json           ← same data, machine-readable
 M:\search\                      ← corpus-wide scans (v0.21+)
         iocs.txt                ← URLs / IPv4 / emails / JWT / AWS keys
+        iocs.csv  iocs.json     ← machine-readable IOC exports (v0.37)
         yara.txt                ← libyara scan w/ built-in + user rules (v0.22)
+        yara.csv  yara.json     ← machine-readable YARA-hit exports (v0.37)
         yara\                   ← per-rule outputs (v0.26)
             <rule>.txt
         README.txt
+M:\csv\                         ← every CSV export in one flat folder (v0.37)
+        pslist.csv  net_tcp.csv  net_udp.csv  findevil.csv  malfind.csv
+        timeline.csv  timeline_<domain>.csv  yara.csv  iocs.csv  README.txt
+M:\json\                        ← same aggregate as \csv, but JSON (v0.37)
+        pslist.json  net_tcp.json  findevil.json  malfind.json
+        yara.json  iocs.json  README.txt
 M:\plugins\                     ← third-party DLL drop-ins (v0.25)
         <plugin>\               ← one subdir per loaded plugin
         README.txt

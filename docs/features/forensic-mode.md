@@ -6,7 +6,11 @@
 at each file's registration site, and `Node::size_hint()` on the VFS node base.
 **Engine wiring:** The VFS tree is built as usual, then — only when `--forensic`
 is passed — the warmer walks the tree and runs `worth_warming()` producers on a
-background thread pool before the mount/command returns.
+background thread pool before the mount/command returns. The pool size is
+auto-chosen (conservative) and can be overridden with `--warm-jobs N`; on
+compressed dumps warming is decompression-bound rather than CPU-bound, so more
+threads don't speed it up. The completion line reports elapsed time, e.g.
+`forensic=full: warming complete in 1m 21s`.
 **Cross-ref:** MemProcFS forensic mode (`m_fc_*`, one-time SQLite ingest); the
 lazy `LazyFileNode` content model documented in
 [pagecache.md](pagecache.md) and [findevil.md](findevil.md).

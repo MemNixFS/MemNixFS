@@ -110,17 +110,21 @@ synthetic-zero-filled rather than stopping the stream at the first gap (the old
 behavior). Use `/sys/mem_ranges.txt` to see which physical ranges were actually
 captured.
 
-### `export <dir>`
-Walks the entire VFS and writes every file to a real directory.
+### `export [<vfs-path>] <dir>`
+Walks the VFS and writes every file to a real directory. An optional
+leading VFS path exports only that subtree — handy for pulling just the
+machine-readable CSV or JSON exports without materialising the whole tree.
 Large `proc.dmp` files are materialised as-is. Useful for tools that
 can't mount filesystems.
 
 ```powershell
-memnixfs --dump output.lime.compressed export C:\mnt\memdump
+memnixfs --dump output.lime.compressed export C:\mnt\memdump    # whole tree
+memnixfs --dump output.lime.compressed export /csv C:\mnt\csv   # just the CSV folder
+memnixfs --dump output.lime.compressed export /json C:\mnt\json # just the JSON folder
 ```
 
-Then browse `C:\mnt\memdump\` in Explorer. The directory layout mirrors
-the mount layout exactly.
+Then browse the output in Explorer. The directory layout mirrors the
+mount layout exactly.
 
 ### `mount <point>`
 Mounts the dump as a live read-only filesystem. Windows builds use WinFsp;
@@ -271,6 +275,27 @@ Typical wins: opening `/sys/findevil/*` and per-process `yara.txt` /
 `threads.txt` is instant after warming, instead of pausing to compute on
 first open.
 
+### `--yara-rules <path>`
+
+Add a YARA rule file (`.yar` / `.yara`) or a whole directory of them to the
+`/search/yara` scan, on top of the built-in ruleset. Repeatable. Rules are
+also picked up from `$LMPFS_YARA_RULES` and a per-user drop-in directory
+(`%LOCALAPPDATA%\MemNixFS\yara` on Windows; `~/.local/share/memnixfs/yara`
+or the legacy `~/.cache/lmpfs/yara` on Linux).
+
+```powershell
+memnixfs --dump dump.lime --yara-rules ./my-rules.yar mount M:
+memnixfs --dump dump.lime --yara-rules ./rules-dir --yara-rules extra.yara tree
+```
+
+### `--warm-jobs N`
+
+Number of background worker threads used for `--precompute` / `--forensic`
+warming. `0` (default) auto-picks a conservative count. Note: warming a
+**compressed** dump (AVML/snappy) is bottlenecked on decompression rather
+than CPU, so raising this past the default does not speed it up — it's a
+tuning knob, not a turbo button.
+
 ### Verbosity
 
 | Flag | Level |
@@ -296,6 +321,7 @@ memnixfs -h        # or --help
 | `LMPFS_SYMBOL_CACHE` | Override the symbol-cache directory for both **saving** fetched ISFs and **searching**. Defaults to `%LOCALAPPDATA%\MemNixFS\symbols` on Windows, `~/.cache/lmpfs/symbols` elsewhere. The `--symbol-cache` flag takes precedence. |
 | `LMPFS_ISF_MIRRORS` | Semicolon-separated list of mirror URL templates. Each entry can contain `{KEY}` (banner SHA-256) and `{KEY:0:2}` (first 2 chars). Defaults to the Abyss-W4tcher vol3-symbols repo. |
 | `LMPFS_TOOLS_DIR` | Where to find `tools/fetch_symbols.sh` if it's not in a default location. |
+| `LMPFS_YARA_RULES` | Extra YARA rule files/dirs to compile into `/search/yara` (`;`-separated on Windows, `:` on Linux), alongside the built-ins, `--yara-rules`, and the per-user `yara/` drop-in dir. |
 
 ## Exit codes
 
