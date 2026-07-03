@@ -277,8 +277,9 @@ first open.
 
 ### `--yara-rules <path>`
 
-Add a YARA rule file (`.yar` / `.yara`) or a whole directory of them to the
-`/search/yara` scan, on top of the built-in ruleset. Repeatable. Rules are
+Add a YARA rule file (`.yar` / `.yara`), a whole directory, or a wildcard
+whose final component contains `*` or `?` to the `/search/yara` scan, on top
+of the built-in ruleset. Repeatable. Rules are
 also picked up from `$LMPFS_YARA_RULES` and a per-user drop-in directory
 (`%LOCALAPPDATA%\MemNixFS\yara` on Windows; `~/.local/share/memnixfs/yara`
 or the legacy `~/.cache/lmpfs/yara` on Linux).
@@ -286,7 +287,13 @@ or the legacy `~/.cache/lmpfs/yara` on Linux).
 ```powershell
 memnixfs --dump dump.lime --yara-rules ./my-rules.yar mount M:
 memnixfs --dump dump.lime --yara-rules ./rules-dir --yara-rules extra.yara tree
+memnixfs --dump dump.lime --yara-rules "C:\Rules\*.yar" export /csv out
 ```
+
+YARA CSV/JSON rows include the exact matched string identifier and virtual
+address, match length, a readable escaped `preview`, and a byte-exact
+`preview_hex`. Invalid explicit paths and wildcards that match nothing fail
+instead of silently falling back to built-in rules.
 
 ### `--warm-jobs N`
 

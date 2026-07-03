@@ -6,7 +6,11 @@
 #include "arch/x86_64/paging.h"
 #include "core/log.h"
 #include "core/app_paths.h"
+#include "core/error.h"
 #include <fmt/format.h>
+#include <nlohmann/json.hpp>
+#include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -27,6 +31,55 @@ void set_user_yara_paths(std::vector<std::string> paths) {
     g_user_yara_paths = std::move(paths);
 }
 
+namespace detail {
+std::string yara_hex_preview(const u8* data, std::size_t size) {
+    std::string out;
+    const std::size_t n = std::min<std::size_t>(size, 32);
+    out.reserve(n * 3);
+    for (std::size_t i = 0; i < n; ++i) {
+        out += fmt::format("{:02x}", data[i]);
+        if (i + 1 < n) out += ' ';
+    }
+    return out;
+}
+
+std::string yara_text_preview(const u8* data, std::size_t size) {
+    std::string out;
+    const std::size_t n = std::min<std::size_t>(size, 64);
+    out.reserve(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        const unsigned char ch = data[i];
+        if (ch < 0x20 || ch > 0x7e) {
+            std::size_t binary_run = 0;
+            while (i + binary_run < n) {
+                const unsigned char next = data[i + binary_run];
+                if (next == '\n' || next == '\r' || next == '\t' ||
+                    (next >= 0x20 && next <= 0x7e))
+                    break;
+                ++binary_run;
+            }
+            if (binary_run >= 4) {
+                out += out.empty() ? "<binary data>" : "...";
+                break;
+            }
+        }
+        switch (ch) {
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n";  break;
+            case '\r': out += "\\r";  break;
+            case '\t': out += "\\t";  break;
+            case '"':  out += "\\\""; break;
+            default:
+                if (ch >= 0x20 && ch <= 0x7e)
+                    out.push_back(static_cast<char>(ch));
+                else
+                    out += fmt::format("\\x{:02x}", ch);
+        }
+    }
+    return out;
+}
+} // namespace detail
+
 #ifndef LMPFS_HAS_YARA
 
 ByteBuf format_yara_global(const Engine&) {
@@ -44,7 +97,8 @@ ByteBuf format_yara_per_pid(const Engine&, const Process& p) {
 }
 
 ByteBuf format_yara_csv(const Engine&) {
-    const char h[] = "rule,pid,comm,vma_start,hit_va,preview\r\n";
+    const char h[] =
+        "rule,string,pid,comm,vma_start,hit_va,match_length,preview,preview_hex\r\n";
     return ByteBuf(h, h + sizeof(h) - 1);
 }
 ByteBuf format_yara_json(const Engine&) {
@@ -239,6 +293,35 @@ void try_add_file(YR_COMPILER* c, const std::filesystem::path& path,
                                                   path.string(), rc); }
 }
 
+bool wildcard_match(std::string_view pattern, std::string_view value) {
+    std::size_t p = 0, v = 0, star = std::string_view::npos, retry = 0;
+    while (v < value.size()) {
+        const auto fold = [](unsigned char ch) {
+#ifdef _WIN32
+            return static_cast<unsigned char>(std::tolower(ch));
+#else
+            return ch;
+#endif
+        };
+        if (p < pattern.size() &&
+            (pattern[p] == '?' ||
+             fold(static_cast<unsigned char>(pattern[p])) ==
+             fold(static_cast<unsigned char>(value[v])))) {
+            ++p; ++v;
+        } else if (p < pattern.size() && pattern[p] == '*') {
+            star = p++;
+            retry = v;
+        } else if (star != std::string_view::npos) {
+            p = star + 1;
+            v = ++retry;
+        } else {
+            return false;
+        }
+    }
+    while (p < pattern.size() && pattern[p] == '*') ++p;
+    return p == pattern.size();
+}
+
 void try_add_directory(YR_COMPILER* c, const std::filesystem::path& dir,
                         std::string& summary, int& ok, int& bad)
 {
@@ -251,6 +334,42 @@ void try_add_directory(YR_COMPILER* c, const std::filesystem::path& dir,
         if (ext == ".yar" || ext == ".yara")
             try_add_file(c, e.path(), summary, ok, bad);
     }
+}
+
+void try_add_path(YR_COMPILER* c, const std::filesystem::path& path,
+                  std::string& summary, int& ok, int& bad,
+                  bool report_missing)
+{
+    const std::string leaf = path.filename().string();
+    if (leaf.find_first_of("*?") != std::string::npos) {
+        auto parent = path.parent_path();
+        if (parent.empty()) parent = ".";
+        std::error_code ec;
+        std::vector<std::filesystem::path> matches;
+        for (const auto& e : std::filesystem::directory_iterator(parent, ec)) {
+            if (ec) break;
+            if (wildcard_match(leaf, e.path().filename().string()))
+                matches.push_back(e.path());
+        }
+        std::sort(matches.begin(), matches.end());
+        if (matches.empty()) {
+            if (report_missing)
+                throw_error("YARA rule wildcard matched nothing: '{}'",
+                            path.string());
+            return;
+        }
+        for (const auto& match : matches)
+            try_add_path(c, match, summary, ok, bad, true);
+        return;
+    }
+
+    std::error_code ec;
+    if (std::filesystem::is_directory(path, ec))
+        try_add_directory(c, path, summary, ok, bad);
+    else if (std::filesystem::is_regular_file(path, ec))
+        try_add_file(c, path, summary, ok, bad);
+    else if (report_missing)
+        throw_error("YARA rule path not found: '{}'", path.string());
 }
 
 CompiledRules& get_compiled_rules() {
@@ -268,6 +387,8 @@ CompiledRules& get_compiled_rules() {
             log::warn("yara: yr_compiler_create failed");
             return;
         }
+        std::unique_ptr<YR_COMPILER, decltype(&yr_compiler_destroy)>
+            compiler_guard(c, &yr_compiler_destroy);
         // Don't bail on individual rule errors — keep going so a broken
         // user .yar doesn't disable the default ruleset.
         yr_compiler_set_callback(c,
@@ -289,24 +410,16 @@ CompiledRules& get_compiled_rules() {
             summary += fmt::format(" (defaults: {} error(s) — see logs)", rc);
         }
         // 2) --yara-rules (CLI): explicit, highest-precedence user source.
-        for (const auto& raw : g_user_yara_paths) {
-            std::filesystem::path p = raw;
-            if (std::filesystem::is_directory(p))
-                try_add_directory(c, p, summary, ok, bad);
-            else
-                try_add_file(c, p, summary, ok, bad);
-        }
+        for (const auto& raw : g_user_yara_paths)
+            try_add_path(c, std::filesystem::path(raw), summary, ok, bad, true);
         // 3) $LMPFS_YARA_RULES env var (':'/';'-separated files or dirs)
         if (const char* env = std::getenv("LMPFS_YARA_RULES")) {
             std::string raw = env;
             std::string acc;
             auto flush = [&](std::string& s) {
                 if (s.empty()) return;
-                std::filesystem::path p = s;
-                if (std::filesystem::is_directory(p))
-                    try_add_directory(c, p, summary, ok, bad);
-                else
-                    try_add_file(c, p, summary, ok, bad);
+                try_add_path(c, std::filesystem::path(s),
+                             summary, ok, bad, true);
                 s.clear();
             };
             // On Windows ':' is part of drive letters (C:\...); only use
@@ -325,7 +438,7 @@ CompiledRules& get_compiled_rules() {
         // 4) Per-user drop-in dirs — same resolver on Windows and Linux, so
         //    ~/.local/share/memnixfs/yara and ~/.cache/lmpfs/yara both work.
         for (const auto& d : paths::user_dirs("yara"))
-            try_add_directory(c, d, summary, ok, bad);
+            try_add_path(c, d, summary, ok, bad, false);
         if (ok > 0)  summary += fmt::format("\nUser rules added: {} OK, {} skipped.", ok, bad);
         else if (bad > 0) summary += fmt::format("\nUser rules: {} skipped.", bad);
 
@@ -333,7 +446,6 @@ CompiledRules& get_compiled_rules() {
         YR_RULES* rules = nullptr;
         rc = yr_compiler_get_rules(c, &rules);
         log::info("yara: yr_compiler_get_rules rc={} rules={:p}", rc, (void*)rules);
-        yr_compiler_destroy(c);
         if (rc != 0 || !rules) {
             log::warn("yara: yr_compiler_get_rules failed (rc={})", rc);
             cache.load_summary = "Compilation FAILED — see logs.";
@@ -357,42 +469,73 @@ struct ScanState {
     // Aggregated results.
     struct Hit {
         std::string rule;
+        std::string string_id;
         u32         pid;
         std::string comm;
         VAddr       vma_start;
         u64         hit_va;
+        u32         match_length;
         std::string preview;
+        std::string preview_hex;
     };
     std::vector<Hit>* sink = nullptr;
 };
 
-int yara_match_callback(YR_SCAN_CONTEXT* /*ctx*/, int message, void* msg_data,
+int yara_match_callback(YR_SCAN_CONTEXT* ctx, int message, void* msg_data,
                          void* user_data)
 {
     if (message != CALLBACK_MSG_RULE_MATCHING) return CALLBACK_CONTINUE;
     auto* state = static_cast<ScanState*>(user_data);
     auto* rule  = static_cast<YR_RULE*>(msg_data);
 
-    ScanState::Hit h;
-    h.rule      = rule->identifier ? rule->identifier : "(anon)";
-    h.pid       = state->pid;
-    h.comm      = state->comm;
-    h.vma_start = state->vma_start;
-    // We don't get per-string offsets back through this callback without
-    // a custom CALLBACK_MSG_TOO_MANY_MATCHES handler — report the chunk
-    // base VA as an approximation.
-    h.hit_va    = state->vma_start + state->chunk_off;
+    bool emitted = false;
+    YR_STRING* string = nullptr;
+    yr_rule_strings_foreach(rule, string) {
+        YR_MATCH* match = nullptr;
+        yr_string_matches_foreach(ctx, string, match) {
+            if (state->sink->size() >= 5000) return CALLBACK_ABORT;
+            const int64_t rel = match->base + match->offset;
+            if (rel < 0 ||
+                static_cast<std::uint64_t>(rel) >= state->last_buf.size())
+                continue;
+            const std::size_t at = static_cast<std::size_t>(rel);
 
-    // Hex-preview: first 32 bytes of the chunk.
-    if (!state->last_buf.empty()) {
-        std::size_t n = std::min<std::size_t>(state->last_buf.size(), 32);
-        for (std::size_t i = 0; i < n; ++i) {
-            h.preview += fmt::format("{:02x}", state->last_buf[i]);
-            if (i + 1 < n) h.preview += ' ';
+            ScanState::Hit h;
+            h.rule = rule->identifier ? rule->identifier : "(anon)";
+            h.string_id = string->identifier ? string->identifier : "(anonymous)";
+            h.pid = state->pid;
+            h.comm = state->comm;
+            h.vma_start = state->vma_start;
+            h.hit_va = state->vma_start + state->chunk_off + at;
+            h.match_length = match->match_length > 0
+                ? static_cast<u32>(match->match_length) : 0;
+            h.preview = detail::yara_text_preview(
+                state->last_buf.data() + at, state->last_buf.size() - at);
+            h.preview_hex = detail::yara_hex_preview(
+                state->last_buf.data() + at, state->last_buf.size() - at);
+            state->sink->push_back(std::move(h));
+            emitted = true;
         }
     }
-    state->sink->push_back(std::move(h));
-    // Cap to keep output manageable.
+
+    if (!emitted && state->sink->size() < 5000) {
+        ScanState::Hit h;
+        h.rule = rule->identifier ? rule->identifier : "(anon)";
+        h.string_id = "(condition)";
+        h.pid = state->pid;
+        h.comm = state->comm;
+        h.vma_start = state->vma_start;
+        h.hit_va = state->vma_start + state->chunk_off;
+        h.match_length = 0;
+        if (!state->last_buf.empty()) {
+            h.preview = detail::yara_text_preview(
+                state->last_buf.data(), state->last_buf.size());
+            h.preview_hex = detail::yara_hex_preview(
+                state->last_buf.data(), state->last_buf.size());
+        }
+        state->sink->push_back(std::move(h));
+    }
+
     if (state->sink->size() >= 5000) return CALLBACK_ABORT;
     return CALLBACK_CONTINUE;
 }
@@ -474,13 +617,13 @@ ByteBuf format_results(const std::vector<ScanState::Hit>& hits,
         out += "(no rule matched any scanned chunk)\n";
         return ByteBuf(out.begin(), out.end());
     }
-    out += "# rule                            pid   comm              vma_start         hit_va            preview (first 32 B of chunk)\n";
-    out += "# -------------------------------+-----+-----------------+----------------+-----------------+---------\n";
+    out += "# rule                            string            pid   comm              vma_start         hit_va            len   preview\n";
+    out += "# -------------------------------+-----------------+-----+-----------------+----------------+-----------------+-----+---------\n";
     for (const auto& h : hits) {
-        out += fmt::format("{:<32}  {:>5}  {:<16}  {:#016x}  {:#016x}  {}\n",
-                           h.rule.substr(0, 32),
+        out += fmt::format("{:<32}  {:<16}  {:>5}  {:<16}  {:#016x}  {:#016x}  {:>5}  {}\n",
+                           h.rule.substr(0, 32), h.string_id.substr(0, 16),
                            h.pid, h.comm.substr(0, 16),
-                           h.vma_start, h.hit_va, h.preview);
+                           h.vma_start, h.hit_va, h.match_length, h.preview);
     }
     return ByteBuf(out.begin(), out.end());
 }
@@ -506,23 +649,8 @@ std::string csv_field(const std::string& s) {
 }
 
 std::string json_field(const std::string& s) {
-    std::string o; o.push_back('"');
-    for (char ch : s) {
-        switch (ch) {
-            case '"':  o += "\\\""; break;
-            case '\\': o += "\\\\"; break;
-            case '\n': o += "\\n";  break;
-            case '\r': o += "\\r";  break;
-            case '\t': o += "\\t";  break;
-            default:
-                if (static_cast<unsigned char>(ch) < 0x20)
-                    o += fmt::format("\\u{:04x}",
-                                     static_cast<unsigned>(static_cast<unsigned char>(ch)));
-                else o.push_back(ch);
-        }
-    }
-    o.push_back('"');
-    return o;
+    return nlohmann::json(s).dump(
+        -1, ' ', false, nlohmann::json::error_handler_t::replace);
 }
 
 } // anonymous
@@ -536,10 +664,9 @@ ByteBuf format_yara_global(const Engine& eng) {
         return ByteBuf(out.begin(), out.end());
     }
     std::vector<ScanState::Hit> hits;
-    for (const auto& p : eng.processes()) {
-        scan_process(eng, p, cache.rules, hits);
-        if (hits.size() >= 5000) break;
-    }
+    for (const auto& h : eng.global_yara())
+        hits.push_back({h.rule, h.string_id, h.pid, h.comm, h.vma_start,
+                        h.hit_va, h.match_length, h.preview, h.preview_hex});
     return format_results(hits, cache.load_summary,
                            "global (every user task's readable VMAs)");
 }
@@ -567,16 +694,20 @@ std::vector<YaraHit> collect_global_yara_hits(const Engine& eng) {
     auto& cache = get_compiled_rules();
     if (!cache.rules) return out;
     for (const auto& h : collect_global_hits(eng, cache.rules))
-        out.push_back({h.rule, h.pid, h.comm, h.vma_start, h.hit_va, h.preview});
+        out.push_back({h.rule, h.string_id, h.pid, h.comm, h.vma_start,
+                       h.hit_va, h.match_length, h.preview, h.preview_hex});
     return out;
 }
 
 ByteBuf format_yara_csv(const Engine& eng) {
-    std::string out = "rule,pid,comm,vma_start,hit_va,preview\r\n";
+    std::string out =
+        "rule,string,pid,comm,vma_start,hit_va,match_length,preview,preview_hex\r\n";
     for (const auto& h : eng.global_yara())
-        out += fmt::format("{},{},{},{:#x},{:#x},{}\r\n",
-                           csv_field(h.rule), h.pid, csv_field(h.comm),
-                           h.vma_start, h.hit_va, csv_field(h.preview));
+        out += fmt::format("{},{},{},{},{:#x},{:#x},{},{},{}\r\n",
+                           csv_field(h.rule), csv_field(h.string_id),
+                           h.pid, csv_field(h.comm), h.vma_start, h.hit_va,
+                           h.match_length, csv_field(h.preview),
+                           csv_field(h.preview_hex));
     return ByteBuf(out.begin(), out.end());
 }
 
@@ -586,11 +717,13 @@ ByteBuf format_yara_json(const Engine& eng) {
     for (std::size_t i = 0; i < hits.size(); ++i) {
         const auto& h = hits[i];
         out += fmt::format(
-            "{}\n  {{\"rule\":{},\"pid\":{},\"comm\":{},"
-            "\"vma_start\":\"{:#x}\",\"hit_va\":\"{:#x}\",\"preview\":{}}}",
+            "{}\n  {{\"rule\":{},\"string\":{},\"pid\":{},\"comm\":{},"
+            "\"vma_start\":\"{:#x}\",\"hit_va\":\"{:#x}\","
+            "\"match_length\":{},\"preview\":{},\"preview_hex\":{}}}",
             i ? "," : "",
-            json_field(h.rule), h.pid, json_field(h.comm),
-            h.vma_start, h.hit_va, json_field(h.preview));
+            json_field(h.rule), json_field(h.string_id), h.pid,
+            json_field(h.comm), h.vma_start, h.hit_va, h.match_length,
+            json_field(h.preview), json_field(h.preview_hex));
     }
     out += "\n]\n";
     return ByteBuf(out.begin(), out.end());
@@ -624,14 +757,13 @@ ByteBuf format_yara_per_rule(const Engine& eng, const std::string& rule_name) {
         out += "# " + cache.load_summary + "\n";
         return ByteBuf(out.begin(), out.end());
     }
-    // Run the same global scan; filter hits by rule_name.
-    std::vector<ScanState::Hit> all;
-    for (const auto& p : eng.processes()) {
-        scan_process(eng, p, cache.rules, all);
-        if (all.size() >= 5000) break;
-    }
     std::vector<ScanState::Hit> filtered;
-    for (auto& h : all) if (h.rule == rule_name) filtered.push_back(std::move(h));
+    for (const auto& h : eng.global_yara()) {
+        if (h.rule == rule_name)
+            filtered.push_back({h.rule, h.string_id, h.pid, h.comm, h.vma_start,
+                                h.hit_va, h.match_length,
+                                h.preview, h.preview_hex});
+    }
     return format_results(filtered, cache.load_summary,
                            fmt::format("rule '{}' across every user task's VMAs",
                                         rule_name));

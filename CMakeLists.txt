@@ -381,6 +381,11 @@ if(LMPFS_BUILD_TESTS)
     target_link_libraries(forensic_warmer_test PRIVATE memnixfs_core)
     add_test(NAME forensic_warmer_test COMMAND forensic_warmer_test)
 
+    add_executable(yara_format_test tests/unit/yara_format_test.cpp)
+    target_include_directories(yara_format_test PRIVATE src)
+    target_link_libraries(yara_format_test PRIVATE memnixfs_core)
+    add_test(NAME yara_format_test COMMAND yara_format_test)
+
     # Sample plugin DLL — drops into LMPFS_PLUGINS_DIR or
     # %LOCALAPPDATA%\MemNixFS\plugins to demonstrate the plugin SDK.
     add_library(sample_plugin SHARED tests/c_api/sample_plugin.cpp)

@@ -135,8 +135,8 @@ void usage() {
         "  --warm-jobs N       Worker threads for --precompute/--forensic warming\n"
         "                      (0 = auto, most cores). Raise to finish warming\n"
         "                      sooner; lower to leave more CPU for other work.\n"
-        "  --yara-rules PATH   Add a YARA rule file (.yar/.yara) or a folder of\n"
-        "                      them to /search/yara, on top of the built-ins.\n"
+        "  --yara-rules PATH   Add a YARA rule file (.yar/.yara), folder, or\n"
+        "                      wildcard path (e.g. C:\\Rules\\*.yar) to /search/yara.\n"
         "                      Repeatable. See also $LMPFS_YARA_RULES below.\n"
         "Environment:\n"
         "  LMPFS_SYMBOL_CACHE  Override the symbol cache dir (saving + searching).\n"
@@ -161,6 +161,8 @@ void export_tree(const lmpfs::vfs::NodePtr& n, const std::filesystem::path& out)
         for (auto& e : n->list()) export_tree(e.node, out / e.name);
     } else {
         std::ofstream f(out, std::ios::binary);
+        if (!f)
+            lmpfs::throw_error("export: cannot create '{}'", out.string());
         const std::size_t kBuf = 64 * 1024;
         std::vector<char> buf(kBuf);
         std::uint64_t off = 0;
@@ -168,6 +170,8 @@ void export_tree(const lmpfs::vfs::NodePtr& n, const std::filesystem::path& out)
             std::size_t got = n->read(off, buf.data(), buf.size());
             if (got == 0) break;
             f.write(buf.data(), got);
+            if (!f)
+                lmpfs::throw_error("export: write failed for '{}'", out.string());
             off += got;
             if (got < buf.size()) break;
         }
@@ -503,7 +507,15 @@ int main(int argc, char** argv) {
                 fmt::print(stderr, "export: no such VFS path: {}\n", export_path);
                 return 1;
             }
-            export_tree(node, out);
+            // The command contract says DIR. When PATH resolves to one file,
+            // create DIR and retain the VFS filename instead of unexpectedly
+            // treating DIR itself as the output filename.
+            if (node->is_dir()) {
+                export_tree(node, out);
+            } else {
+                std::filesystem::create_directories(out);
+                export_tree(node, out / node->name());
+            }
             fmt::print("Exported {} to: {}\n",
                        export_path.empty() ? std::string("the whole VFS") : export_path,
                        out.string());

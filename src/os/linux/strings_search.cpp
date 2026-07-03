@@ -6,6 +6,7 @@
 #include "arch/x86_64/paging.h"
 #include "core/log.h"
 #include <fmt/format.h>
+#include <nlohmann/json.hpp>
 #include <algorithm>
 #include <cctype>
 #include <string_view>
@@ -287,23 +288,8 @@ std::string csv_esc(const std::string& s) {
 }
 
 std::string json_esc(const std::string& s) {
-    std::string o; o.push_back('"');
-    for (char ch : s) {
-        switch (ch) {
-            case '"':  o += "\\\""; break;
-            case '\\': o += "\\\\"; break;
-            case '\n': o += "\\n";  break;
-            case '\r': o += "\\r";  break;
-            case '\t': o += "\\t";  break;
-            default:
-                if (static_cast<unsigned char>(ch) < 0x20)
-                    o += fmt::format("\\u{:04x}",
-                                     static_cast<unsigned>(static_cast<unsigned char>(ch)));
-                else o.push_back(ch);
-        }
-    }
-    o.push_back('"');
-    return o;
+    return nlohmann::json(s).dump(
+        -1, ' ', false, nlohmann::json::error_handler_t::replace);
 }
 
 } // anonymous
@@ -381,36 +367,18 @@ ByteBuf format_global_iocs(const Engine& eng) {
     };
     std::vector<PerPidHit> per_pid_url, per_pid_ipv4, per_pid_email, per_pid_jwt, per_pid_aws;
 
-    std::size_t total = 0;
-    for (const auto& p : eng.processes()) {
-        if (p.mm == 0) continue;
-        // Per-process budget — keep one process from dominating.
-        auto hits = extract_strings(eng, p, /*min_len=*/8, /*max_hits=*/1500);
-        for (const auto& h : hits) {
-            std::size_t before = agg.urls.size() + agg.ipv4s.size() +
-                                  agg.emails.size() + agg.jwts.size() +
-                                  agg.aws_keys.size();
-            extract_iocs(h.text, agg);
-            std::size_t after = agg.urls.size() + agg.ipv4s.size() +
-                                 agg.emails.size() + agg.jwts.size() +
-                                 agg.aws_keys.size();
-            if (after > before) {
-                ++total;
-                // Track ONE per-pid attribution per category (the first).
-                if (agg.urls    .size() > 0 && per_pid_url  .size() < kGlobalCap)
-                    per_pid_url.push_back({ p.pid, p.comm, agg.urls.back() });
-                if (agg.ipv4s   .size() > 0 && per_pid_ipv4 .size() < kGlobalCap)
-                    per_pid_ipv4.push_back({ p.pid, p.comm, agg.ipv4s.back() });
-                if (agg.emails  .size() > 0 && per_pid_email.size() < kGlobalCap)
-                    per_pid_email.push_back({ p.pid, p.comm, agg.emails.back() });
-                if (agg.jwts    .size() > 0 && per_pid_jwt  .size() < kGlobalCap)
-                    per_pid_jwt.push_back({ p.pid, p.comm, agg.jwts.back() });
-                if (agg.aws_keys.size() > 0 && per_pid_aws  .size() < kGlobalCap)
-                    per_pid_aws.push_back({ p.pid, p.comm, agg.aws_keys.back() });
-            }
-            if (total >= kGlobalCap) break;
-        }
-        if (total >= kGlobalCap) break;
+    for (const auto& h : eng.global_iocs()) {
+        auto add = [&](std::vector<std::string>& values,
+                       std::vector<PerPidHit>& attributed) {
+            values.push_back(h.value);
+            if (attributed.size() < kGlobalCap)
+                attributed.push_back({h.pid, h.comm, h.value});
+        };
+        if      (h.type == "url")     add(agg.urls,     per_pid_url);
+        else if (h.type == "ipv4")    add(agg.ipv4s,    per_pid_ipv4);
+        else if (h.type == "email")   add(agg.emails,   per_pid_email);
+        else if (h.type == "jwt")     add(agg.jwts,     per_pid_jwt);
+        else if (h.type == "aws_key") add(agg.aws_keys, per_pid_aws);
     }
 
     // De-dup the aggregated lists for the summary header.

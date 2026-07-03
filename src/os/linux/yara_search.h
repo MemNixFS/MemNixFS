@@ -5,8 +5,8 @@
 //   /search/yara.txt           Global scan across every user task's
 //                              readable VMAs. Output groups hits by
 //                              rule, then by PID; each row shows the
-//                              VMA, offset within the VMA, and a short
-//                              hex-preview of the match site.
+//                              exact match VA, readable escaped preview,
+//                              match length, and byte-exact hex preview.
 //
 //   /proc/<pid>/yara.txt       Same scanner, scoped to one process.
 //
@@ -17,8 +17,8 @@
 //      shellcode markers, Mimikatz strings, Cobalt Strike beacons,
 //      meterpreter, common packer signatures.
 //
-//   2. --yara-rules <path> (CLI) — a .yar/.yara file or a directory of
-//      them. Repeatable; highest-precedence user source.
+//   2. --yara-rules <path> (CLI) — a .yar/.yara file, directory, or wildcard
+//      path (wildcards in the final component). Repeatable; highest-precedence.
 //
 //   3. $LMPFS_YARA_RULES — list of .yar/.yara files or directories
 //      (';'-separated on Windows, ':' on Linux). Bad rules are skipped
@@ -50,6 +50,11 @@ namespace lmpfs { class Engine; }
 
 namespace lmpfs::linux {
 
+namespace detail {
+std::string yara_text_preview(const u8* data, std::size_t size);
+std::string yara_hex_preview(const u8* data, std::size_t size);
+}
+
 // Register extra YARA rule files / directories (from --yara-rules) to compile
 // into the ruleset alongside the built-in defaults, $LMPFS_YARA_RULES, and the
 // per-user drop-in dir. Each entry is a .yar/.yara file OR a directory. MUST be
@@ -67,11 +72,14 @@ ByteBuf format_yara_per_pid(const Engine& eng, const Process& p);
 // Empty when YARA support isn't built into this binary.
 struct YaraHit {
     std::string rule;
+    std::string string_id;
     u32         pid = 0;
     std::string comm;
     VAddr       vma_start = 0;
     u64         hit_va = 0;
+    u32         match_length = 0;
     std::string preview;
+    std::string preview_hex;
 };
 std::vector<YaraHit> collect_global_yara_hits(const Engine& eng);
 

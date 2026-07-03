@@ -41,7 +41,8 @@ public:
         bool                  precompute         = false;
         // --yara-rules: extra YARA rule files or directories to compile into
         // the ruleset, on top of the built-in defaults, $LMPFS_YARA_RULES, and
-        // the per-user drop-in dir. Each entry is a .yar/.yara file or a folder.
+        // the per-user drop-in dir. Each entry is a .yar/.yara file, folder,
+        // or wildcard path whose final component contains '*' or '?'.
         std::vector<std::string> yara_rules;
         // --warm-jobs: worker threads for background pre-warming (0 = auto,
         // which uses most of the machine's cores). Higher finishes sooner.
