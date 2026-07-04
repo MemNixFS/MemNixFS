@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 # Release version. Overridable so the release workflow can stamp the git tag:
 # it passes -DLMPFS_VERSION=<tag without 'v'> (e.g. tag v1.1 -> 1.1). Plain or
 # local builds default to the next planned release.
-set(LMPFS_VERSION "1.1.0" CACHE STRING "MemNixFS release/package version")
+set(LMPFS_VERSION "1.2.0" CACHE STRING "MemNixFS release/package version")
 project(MemNixFS
     VERSION ${LMPFS_VERSION}
     DESCRIPTION "Mount Linux memory dumps as a virtual filesystem"
