@@ -3,6 +3,9 @@
 ![Language: C++17](https://img.shields.io/badge/C%2B%2B-17-00599C.svg)
 ![Platform: Windows · Linux](https://img.shields.io/badge/platform-Windows%20%C2%B7%20Linux-lightgrey.svg)
 
+<a href="https://trendshift.io/repositories/62878?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-62878" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/62878/daily?language=C%2B%2B" alt="MemNixFS%2FMemNixFS | Trendshift" width="250" height="55"/></a>
+<a href="https://trendshift.io/repositories/62878?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-62878" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/62878/weekly?language=C%2B%2B" alt="MemNixFS%2FMemNixFS | Trendshift" width="250" height="55"/></a>
+
 **Mount a Linux memory dump as a filesystem and investigate it with the tools you already use.**
 
 Point MemNixFS at an AVML / LiME / raw / kdump image and the live kernel state at the
